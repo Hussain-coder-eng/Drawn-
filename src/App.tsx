@@ -279,15 +279,6 @@ export default function App() {
       const distInKm = state.unit === "mi" ? validDist * 1.60934 : validDist;
       const radiusMeters = overpassService.calculateRadius(distInKm);
 
-      console.log("[DEBUG] Fetching road network...", { userLocation, radiusMeters });
-      const network = await overpassService.fetchRoadNetwork(userLocation, radiusMeters, (msg) => {
-        setLoadingMessage(msg);
-      });
-      console.log("[DEBUG] Road network fetched", { nodeCount: network.nodes.length });
-      if (network.nodes.length < 20) {
-        throw new Error("Not enough roads found in this area. Try a larger distance.");
-      }
-
       let script;
       const validText = validateText(state.textInput);
       if (state.mode === "shapes") {
@@ -336,6 +327,15 @@ export default function App() {
         idealAnchors = generateText(validText, userLocation, distInKm);
       } else if (state.mode === "draw") {
         idealAnchors = state.drawnPath;
+      }
+
+      console.log("[DEBUG] Fetching road network...", { userLocation, radiusMeters, anchorCount: idealAnchors.length });
+      const network = await overpassService.fetchRoadNetwork(userLocation, radiusMeters, (msg) => {
+        setLoadingMessage(msg);
+      }, idealAnchors);
+      console.log("[DEBUG] Road network fetched", { nodeCount: network.nodes.length });
+      if (network.nodes.length < 20) {
+        throw new Error("Not enough roads found in this area. Try a larger distance.");
       }
 
       const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], 1)[0];

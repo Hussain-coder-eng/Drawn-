@@ -46,8 +46,8 @@ export class OverpassService {
     "https://overpass.ext.paws.wmcloud.org/api/interpreter"
   ];
 
-  async fetchRoadNetwork(center: Point, radiusMeters: number, onProgress?: (msg: string) => void): Promise<RoadNetwork> {
-    const cacheKey = `${center.lat.toFixed(4)},${center.lng.toFixed(4)},${radiusMeters}`;
+  async fetchRoadNetwork(center: Point, radiusMeters: number, onProgress?: (msg: string) => void, idealAnchors?: Point[]): Promise<RoadNetwork> {
+    const cacheKey = `${center.lat.toFixed(4)},${center.lng.toFixed(4)},${radiusMeters},${idealAnchors ? idealAnchors.length : 0}`;
     const cached = this.cache.get(cacheKey);
     
     if (cached && (Date.now() - cached.timestamp < this.CACHE_EXPIRY)) {
@@ -55,11 +55,24 @@ export class OverpassService {
       return cached.network;
     }
 
+    let areaFilter = `(around:${radiusMeters},${center.lat},${center.lng})`;
+    
+    // If we have ideal anchors, we can use a much tighter bounding box instead of a giant circle
+    if (idealAnchors && idealAnchors.length > 0) {
+      const lats = idealAnchors.map(a => a.lat);
+      const lngs = idealAnchors.map(a => a.lng);
+      const minLat = Math.min(...lats) - 0.005; // ~500m buffer
+      const maxLat = Math.max(...lats) + 0.005;
+      const minLng = Math.min(...lngs) - 0.005;
+      const maxLng = Math.max(...lngs) + 0.005;
+      areaFilter = `(${minLat},${minLng},${maxLat},${maxLng})`;
+    }
+
     const query = `
       [out:json][timeout:25];
       (
-        way["highway"~"residential|living_street|primary|secondary|tertiary|unclassified|service"]
-          (around:${radiusMeters},${center.lat},${center.lng});
+        way["highway"~"residential|living_street|primary|secondary|tertiary"]
+          ${areaFilter};
       );
       out body;
       >;

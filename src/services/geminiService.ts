@@ -19,6 +19,7 @@ CRITICAL RULES:
 - Between stages, take the most direct available road to transition.
 - Each stage should typically have 3-6 high-quality Anchor Points.
 - If a road doesn't exist in the exact direction, pick the closest one that still makes progress.
+- IMPORTANT: Every stage in the "stages" array MUST have a "nodeIds" array, even if it only contains 2 nodes.
 
 Return ONLY the JSON object with the exact keys "startNodeId" and "stages". Each stage object MUST use the keys "stageNumber" and "nodeIds".
 {
@@ -42,6 +43,26 @@ export class GeminiService {
       throw new Error("Gemini API key is missing. Please check your settings.");
     }
     return new GoogleGenAI({ apiKey });
+  }
+
+  private async callWithRetry(fn: () => Promise<any>, maxRetries = 3): Promise<any> {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        attempt++;
+        const isRateLimit = error.message?.includes("429") || error.status === "RESOURCE_EXHAUSTED" || JSON.stringify(error).includes("429");
+        
+        if (isRateLimit && attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+          console.warn(`[DEBUG] Gemini Rate Limit hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   async selectNodesStaged(
@@ -98,7 +119,7 @@ Follow the compass bearing for each stage using whatever roads are available.
 
     let response;
     try {
-      response = await ai.models.generateContent({
+      response = await this.callWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -127,7 +148,7 @@ Follow the compass bearing for each stage using whatever roads are available.
             required: ["startNodeId", "stages"]
           }
         }
-      });
+      }));
     } catch (apiError: any) {
       console.error("[DEBUG] Gemini API Call Failed:", apiError);
       throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
@@ -231,7 +252,7 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
 
     let response;
     try {
-      response = await ai.models.generateContent({
+      response = await this.callWithRetry(() => ai.models.generateContent({
         model,
         contents: reroutePrompt,
         config: {
@@ -260,7 +281,7 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
             required: ["startNodeId", "stages"]
           }
         }
-      });
+      }));
     } catch (apiError: any) {
       console.error("[DEBUG] Gemini Reroute API Call Failed:", apiError);
       throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
@@ -311,11 +332,19 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
       // Handle common AI hallucinations for key names
       if (!stage.nodeIds && stage.anchorPoints) stage.nodeIds = stage.anchorPoints;
       if (!stage.nodeIds && stage.nodes) stage.nodeIds = stage.nodes;
+      if (!stage.nodeIds && stage.waypoints) stage.nodeIds = stage.waypoints;
+      if (!stage.nodeIds && stage.path) stage.nodeIds = stage.path;
       if (stage.stage_number && !stage.stageNumber) stage.stageNumber = stage.stage_number;
+
+      // If nodeIds is a string (comma separated), convert to array
+      if (typeof stage.nodeIds === "string") {
+        stage.nodeIds = stage.nodeIds.split(",").map((s: string) => s.trim());
+      }
 
       if (!stage.nodeIds || !Array.isArray(stage.nodeIds)) {
         const stageId = stage.stageNumber !== undefined ? stage.stageNumber : `at index ${index}`;
-        throw new Error(`AI returned stage ${stageId} without a valid nodeIds array.`);
+        const keysFound = Object.keys(stage).join(", ");
+        throw new Error(`AI returned stage ${stageId} without a valid nodeIds array. Found keys: [${keysFound}]`);
       }
     });
   }
