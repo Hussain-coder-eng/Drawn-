@@ -1,0 +1,112 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - displayName: string (optional) - User's name
+    //   - email: string (required) - User's email
+    //   - photoURL: string (optional) - User's photo
+    //
+    // Collection: routes
+    // Document ID: {routeId}
+    // Fields:
+    //   - uid: string (required) - Owner's UID
+    //   - label: string (required) - Route name
+    //   - mode: string (required) - shapes, text, or draw
+    //   - selectedShape: string (optional)
+    //   - textInput: string (optional)
+    //   - fontStyle: string (optional)
+    //   - distance: number (required)
+    //   - unit: string (required) - mi or km
+    //   - location: string (optional)
+    //   - surface: string (optional) - roads, trails, mixed
+    //   - routeFidelity: number (optional)
+    //   - timestamp: number (required)
+    //
+    // ===============================================================
+
+    // Collection: rateLimits
+    // Document ID: {userId}
+    // Fields:
+    //   - generations: array of timestamps
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (data.displayName is string || !('displayName' in data)) &&
+             (data.photoURL is string || !('photoURL' in data));
+    }
+
+    function isValidRoute(data) {
+      return data.keys().hasAll(['uid', 'label', 'mode', 'distance', 'unit', 'timestamp']) &&
+             data.uid == request.auth.uid &&
+             data.label is string && data.label.size() > 0 && data.label.size() < 100 &&
+             data.mode in ['shapes', 'text', 'draw'] &&
+             data.distance is number && data.distance > 0 &&
+             data.unit in ['mi', 'km'] &&
+             data.timestamp is number &&
+             (data.idealCoords is list || !('idealCoords' in data)) &&
+             (data.snappedCoords is list || !('snappedCoords' in data));
+    }
+
+    function isValidRateLimit(data) {
+      return data.keys().hasAll(['generations']) &&
+             data.generations is list &&
+             data.generations.size() <= 25;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+    }
+
+    match /routes/{routeId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+      allow create: if isAuthenticated() && isValidRoute(request.resource.data);
+      allow update: if isDocOwner() && isValidRoute(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /rateLimits/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidRateLimit(request.resource.data);
+      allow update: if isOwner(userId) && isValidRateLimit(request.resource.data);
+    }
+  }
+}
