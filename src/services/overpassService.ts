@@ -9,7 +9,8 @@ export interface OSMNode {
 
 export interface RoadNetwork {
   nodes: OSMNode[];
-  nodeMap: Map<number, OSMNode>;
+  nodeMap: Map<string, OSMNode>;
+  edgeMap: Map<string, string[]>;
   bounds: {
     minLat: number;
     maxLat: number;
@@ -114,7 +115,15 @@ export class OverpassService {
           }
 
           onProgress?.(`Downloading road data from ${mirrorName}...`);
-          const data = await response.json();
+          const text = await response.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            console.error(`Failed to parse JSON from ${mirrorName}:`, text.slice(0, 100));
+            throw new Error(`Invalid JSON response from ${mirrorName}`);
+          }
+
           console.log(`[DEBUG] Received data from ${mirrorName}`, { elementCount: data.elements?.length });
           if (!data.elements || data.elements.length === 0) {
             onProgress?.(`No roads found on ${mirrorName}.`);
@@ -127,11 +136,12 @@ export class OverpassService {
           return network;
         } catch (error: any) {
           lastError = error;
-          console.error(`Error with ${mirror}:`, error.message);
+          const errorMsg = error.name === "AbortError" ? "Request timed out" : error.message;
+          console.error(`Error with ${mirror}:`, errorMsg);
           
-          // If it's a timeout, don't retry this mirror, move to next
-          if (error.name === "TimeoutError" || error.message.includes("timed out")) {
-            onProgress?.(`${mirrorName} timed out. Trying next...`);
+          // If it's a timeout or network failure, try next mirror
+          if (error.name === "AbortError" || error.message.includes("timed out") || error.message.includes("fetch")) {
+            onProgress?.(`${mirrorName} failed (${errorMsg}). Trying next...`);
             break;
           }
 
@@ -146,13 +156,25 @@ export class OverpassService {
 
   private processOSMData(data: any): RoadNetwork {
     const nodes: OSMNode[] = [];
-    const nodeMap = new Map<number, OSMNode>();
+    const nodeMap = new Map<string, OSMNode>();
+    const edgeMap = new Map<string, string[]>();
     const wayNodes = new Set<number>();
 
-    // First pass: collect nodes used in ways (actual road points)
+    // First pass: collect nodes used in ways (actual road points) and build edgeMap
     data.elements.forEach((el: any) => {
       if (el.type === "way" && el.nodes) {
         el.nodes.forEach((id: number) => wayNodes.add(id));
+        
+        for (let i = 0; i < el.nodes.length - 1; i++) {
+          const u = el.nodes[i].toString();
+          const v = el.nodes[i+1].toString();
+          
+          if (!edgeMap.has(u)) edgeMap.set(u, []);
+          if (!edgeMap.has(v)) edgeMap.set(v, []);
+          
+          edgeMap.get(u)!.push(v);
+          edgeMap.get(v)!.push(u);
+        }
       }
     });
 
@@ -163,7 +185,7 @@ export class OverpassService {
       if (el.type === "node" && wayNodes.has(el.id)) {
         const node = { id: el.id, lat: el.lat, lng: el.lon };
         nodes.push(node);
-        nodeMap.set(el.id, node);
+        nodeMap.set(el.id.toString(), node);
 
         minLat = Math.min(minLat, el.lat);
         maxLat = Math.max(maxLat, el.lat);
@@ -172,18 +194,10 @@ export class OverpassService {
       }
     });
 
-    // Downsample if too many nodes (> 250)
-    // We prioritize intersections (nodes appearing in multiple ways)
-    // But for simplicity here, we'll just take a representative sample if huge
-    let finalNodes = nodes;
-    if (nodes.length > 250) {
-      const step = Math.ceil(nodes.length / 250);
-      finalNodes = nodes.filter((_, i) => i % step === 0);
-    }
-
     return {
-      nodes: finalNodes,
+      nodes,
       nodeMap,
+      edgeMap,
       bounds: { minLat, maxLat, minLng, maxLng }
     };
   }
@@ -201,7 +215,7 @@ export class OverpassService {
     const idealLine = turf.lineString(anchors.map(a => [a.lng, a.lat]));
     
     // We start with a tight buffer and expand if we don't get enough nodes
-    let bufferMeters = 100;
+    let bufferMeters = 50; // Tighter start
     let filteredNodes: OSMNode[] = [];
     
     while (bufferMeters <= 500) {
@@ -212,17 +226,18 @@ export class OverpassService {
       });
 
       // If we have a decent number of nodes (at least 50 or 20% of limit), we're good
-      if (filteredNodes.length >= Math.min(50, limit * 0.2)) break;
-      bufferMeters += 100;
+      if (filteredNodes.length >= Math.min(50, limit * 0.3)) break;
+      bufferMeters += 50;
     }
 
-    // If we still have too many, sample them but keep the ones closest to the anchors
+    // If we still have too many, prioritize nodes closest to the ideal anchors (the "corners")
     if (filteredNodes.length > limit) {
       const nodePoints = turf.featureCollection(
         filteredNodes.map(n => turf.point([n.lng, n.lat], { id: n.id }))
       );
 
       const priorityIds = new Set<number>();
+      // Prioritize nodes at the corners of the shape
       anchors.forEach(anchor => {
         const pt = turf.point([anchor.lng, anchor.lat]);
         const nearest = turf.nearestPoint(pt, nodePoints);
@@ -231,9 +246,11 @@ export class OverpassService {
 
       const remaining = filteredNodes.filter(n => !priorityIds.has(n.id));
       const needed = limit - priorityIds.size;
-      const step = Math.ceil(remaining.length / needed);
       
+      // Instead of simple sampling, we take nodes that are evenly distributed along the path
+      const step = Math.max(1, Math.floor(remaining.length / needed));
       const sampled = remaining.filter((_, i) => i % step === 0).slice(0, needed);
+      
       return [...filteredNodes.filter(n => priorityIds.has(n.id)), ...sampled];
     }
 

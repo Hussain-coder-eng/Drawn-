@@ -44,18 +44,34 @@ import {
 } from "./lib/routeScripts";
 import { 
   Point, 
-  generateCircle, 
-  generateHeart, 
-  generateStar, 
+  generateNormalizedHeart,
+  generateNormalizedStar,
+  generateNormalizedCircle,
+  generateNormalizedInfinity,
+  generateNormalizedArrow,
+  generateNormalizedLightning,
+  generateNormalizedSpiral,
+  generateHeart,
+  generateStar,
+  generateCircle,
   generateSquare,
-  generateInfinity, 
+  generateInfinity,
   generateArrow,
   generateLightning,
   generateText,
-  scaleAndCenter
+  scaleAndCenter,
+  NormalizedPoint,
+  adaptiveSimplify,
+  SHAPE_SIMPLIFICATION_CONFIG
 } from "./lib/shapeMath";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
+import { preprocessorService } from "./services/preprocessorService";
+import { composeWordPath } from "./lib/gpsFont";
+import { buildStageScript } from "./lib/stageService";
+import { findBestOrientation } from "./services/optimizationService";
+import { useNudgeInterface } from "./hooks/useNudgeInterface";
+import { NudgeMap } from "./components/NudgeMap";
 
 // Global limiters
 const osrmLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60000 });
@@ -92,7 +108,10 @@ export default function App() {
     idealCoords: [],
     snappedCoords: [],
     drawnPath: [],
+    normalizedDrawnPath: [],
+    nodeMap: new Map(),
   });
+  const [isNudging, setIsNudging] = useState(false);
 
   const [history, setHistory] = useState<DrawnState[]>([]);
   const [redoStack, setRedoStack] = useState<DrawnState[]>([]);
@@ -271,77 +290,74 @@ export default function App() {
 
     try {
       console.log("[DEBUG] handleGenerate started", { mode: state.mode, distance: state.distance, unit: state.unit });
-      setLoadingMessage("Fetching local road network...");
+      setLoadingMessage("Preprocessing your design...");
 
       await osrmLimiter.check();
       
       const validDist = validateDistance(state.distance);
       const distInKm = state.unit === "mi" ? validDist * 1.60934 : validDist;
-      const radiusMeters = overpassService.calculateRadius(distInKm);
 
-      let script;
-      const validText = validateText(state.textInput);
+      // 1. Get Normalized Points
+      let normalizedPoints: NormalizedPoint[] = [];
+      let shapeLabel = "";
+
       if (state.mode === "shapes") {
-        script = SHAPE_SCRIPTS[state.selectedShape || "circle"] || SHAPE_SCRIPTS["circle"];
-      } else if (state.mode === "text" && validText) {
-        const chars = validText.split("");
-        const letterScripts = chars.map(char => getLetterScript(char)).filter(s => !!s);
-        const missingChars = chars.filter(char => !getLetterScript(char) && char !== " ");
-        
-        if (missingChars.length > 0) {
-          throw new Error(`Could not find scripts for: ${Array.from(new Set(missingChars)).join(", ")}`);
+        shapeLabel = state.selectedShape || "Shape";
+        switch (state.selectedShape) {
+          case "heart": normalizedPoints = generateNormalizedHeart(); break;
+          case "star": normalizedPoints = generateNormalizedStar(); break;
+          case "circle": normalizedPoints = generateNormalizedCircle(); break;
+          case "infinity": normalizedPoints = generateNormalizedInfinity(); break;
+          case "arrow": normalizedPoints = generateNormalizedArrow(); break;
+          case "lightning": normalizedPoints = generateNormalizedLightning(); break;
+          default: normalizedPoints = generateNormalizedCircle();
         }
-        
-        if (letterScripts.length === 0) throw new Error("Please enter some letters to generate a route.");
-        script = { name: validText, stages: chainScripts(letterScripts as any) };
+      } else if (state.mode === "text") {
+        const validText = validateText(state.textInput);
+        shapeLabel = validText;
+        const wordResult = composeWordPath(validText, distInKm, userLocation);
+        normalizedPoints = wordResult.waypoints.map(p => ({ x: p.lng, y: p.lat }));
       } else if (state.mode === "draw") {
-        if (state.drawnPath.length < 2) {
+        shapeLabel = "Custom Drawing";
+        if (state.normalizedDrawnPath.length < 2) {
           throw new Error("Please draw a shape on the canvas first.");
         }
-        script = { 
-          name: "Custom Drawing", 
-          stages: generateScriptFromPath(state.drawnPath) 
-        };
-      } else {
-        throw new Error("Invalid generation mode.");
-      }
-      
-      if (!script || !script.stages) {
-        throw new Error(`Could not find a directional script for ${state.selectedShape}.`);
-      }
-      
-      setCurrentScriptStages(script.stages.length);
-
-      // Generate ideal anchor points to help sample the best nodes
-      let idealAnchors: Point[] = [];
-      if (state.mode === "shapes") {
-        switch (state.selectedShape) {
-          case "heart": idealAnchors = generateHeart(userLocation, distInKm); break;
-          case "circle": idealAnchors = generateCircle(userLocation, distInKm); break;
-          case "square": idealAnchors = generateSquare(userLocation, distInKm); break;
-          case "star": idealAnchors = generateStar(userLocation, distInKm); break;
-          case "arrow": idealAnchors = generateArrow(userLocation, distInKm); break;
-          case "lightning": idealAnchors = generateLightning(userLocation, distInKm); break;
-        }
-      } else if (state.mode === "text" && validText) {
-        idealAnchors = generateText(validText, userLocation, distInKm);
-      } else if (state.mode === "draw") {
-        idealAnchors = state.drawnPath;
+        normalizedPoints = state.normalizedDrawnPath;
       }
 
-      console.log("[DEBUG] Fetching road network...", { userLocation, radiusMeters, anchorCount: idealAnchors.length });
+      // 2. Adaptive Simplification
+      const config = SHAPE_SIMPLIFICATION_CONFIG[state.mode === "shapes" ? state.selectedShape || "circle" : state.mode];
+      const simplifiedPoints = adaptiveSimplify(normalizedPoints, config).points;
+
+      setLoadingMessage("Fetching local road network...");
+      const radiusMeters = (distInKm / (2 * Math.PI)) * 1500; // Rough radius for network fetch
       const network = await overpassService.fetchRoadNetwork(userLocation, radiusMeters, (msg) => {
         setLoadingMessage(msg);
-      }, idealAnchors);
-      console.log("[DEBUG] Road network fetched", { nodeCount: network.nodes.length });
+      });
+
       if (network.nodes.length < 20) {
         throw new Error("Not enough roads found in this area. Try a larger distance.");
       }
 
+      // 3. Rotation and Scale Optimization
+      setLoadingMessage("Optimizing orientation...");
+      const { bestConfig } = await findBestOrientation(
+        simplifiedPoints,
+        userLocation.lat,
+        userLocation.lng,
+        distInKm,
+        network.nodeMap,
+        network.edgeMap,
+        state.mode
+      );
+
+      // 4. Build Stage Script
+      const stages = buildStageScript(bestConfig.projectedPoints.map(p => ({ x: p.lng, y: p.lat })), distInKm);
+      setCurrentScriptStages(stages.length);
+
+      // 5. AI Node Selection (Gemini)
       const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], 1)[0];
-      // Sample 250 nodes prioritized by proximity to the ideal shape path (Pre-Filtering)
-      const sampledNodes = overpassService.getRelevantNodes(network.nodes, idealAnchors, 250);
-      console.log("[DEBUG] Nodes sampled for AI", { sampledCount: sampledNodes.length, startNodeId: startNode.id });
+      const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, 200);
 
       let attempt = 1;
       let result: GeminiStagedResult | null = null;
@@ -350,100 +366,89 @@ export default function App() {
 
       while (attempt <= maxAttempts) {
         setGenerationProgress(prev => ({ ...prev, attempt }));
-        setLoadingMessage(`Planning your ${script.name} — attempt ${attempt} of ${maxAttempts}...`);
+        setLoadingMessage(`Planning your ${shapeLabel} — attempt ${attempt} of ${maxAttempts}...`);
+
+        const aiStages = stages.map(s => ({
+          stage: s.stageIndex + 1,
+          direction: s.compassLabel,
+          turn: s.turnType as any,
+          distancePct: s.distancePct,
+          description: `Move ${s.compassLabel}`
+        }));
 
         if (attempt === 1) {
-          console.log("[DEBUG] Calling Gemini selectNodesStaged (Attempt 1)");
           result = await geminiService.selectNodesStaged(
             sampledNodes,
-            script.stages,
-            script.name,
+            aiStages,
+            shapeLabel,
             distInKm,
             startNode.id,
             (msg) => setLoadingMessage(msg)
           );
         } else if (result && fitness) {
-          console.log("[DEBUG] Calling Gemini rerouteFailingStages", { attempt, failingStages: fitness.failingStages?.map(s => s.stageNumber) || [] });
-          setLoadingMessage(`Stage ${fitness.failingStages[0]?.stageNumber} needs work — retrying...`);
           result = await geminiService.rerouteFailingStages(
             result,
             fitness,
             sampledNodes,
-            script.stages,
+            aiStages,
             distInKm,
-            script.name,
+            shapeLabel,
             (msg) => setLoadingMessage(msg)
           );
         }
 
-        if (!result || !result.stages) {
-          console.error("[DEBUG] AI failed to generate a valid result structure", result);
-          throw new Error("AI failed to generate a valid route structure.");
-        }
+        if (!result || !result.stages) throw new Error("AI failed to generate a valid route structure.");
 
-        console.log("[DEBUG] AI result received", { stageCount: result.stages.length });
-        fitness = fitnessService.scoreRoute(result.stages, script.stages, network.nodeMap, distInKm);
-        
-        if (!fitness || !fitness.failingStages) {
-          console.error("[DEBUG] Fitness service failed to return valid scores", fitness);
-          throw new Error("Failed to evaluate route quality.");
-        }
+        // 6. Anchor Point Locking
+        const idealAnchors = bestConfig.projectedPoints.map((p, i) => ({ ...p, stageIndex: i }));
+        const lockedAnchors = routingService.lockAnchorPointsToNodes(idealAnchors, network.nodeMap);
 
-        console.log("[DEBUG] Fitness score", { score: fitness.overallFitness, passing: fitness.overallFitness >= 90 });
+        // 7. Route with Locked Waypoints
+        const waypointArray = routingService.buildOSRMWaypointArray(result.stages, lockedAnchors, network.nodeMap);
+        const routingResult = await routingService.routeWithLockedWaypoints(waypointArray);
+
+        const routedPoints = routingResult.polylineCoords.map(c => ({ lat: c[1], lng: c[0] }));
+
+        fitness = fitnessService.scoreFitness(
+          routedPoints,
+          state.mode as any,
+          bestConfig.projectedPoints,
+          aiStages,
+          network.nodeMap,
+          distInKm
+        );
+
         setGenerationProgress(prev => ({ 
           ...prev, 
           fitnessScore: fitness?.overallFitness || 0,
           failingStages: fitness?.failingStages?.map(s => s.stageNumber) || []
         }));
 
-        if (fitness.passed) break;
+        if (fitness.passed) {
+          updateState({
+            isGenerating: false,
+            hasResult: true,
+            idealCoords: bestConfig.projectedPoints,
+            snappedCoords: routedPoints,
+            routeFidelity: fitness.overallFitness,
+            distance: validDist,
+            textInput: state.textInput,
+            nodeMap: network.nodeMap
+          }, true);
+          break;
+        }
         attempt++;
       }
-
-      if (!result || !fitness) throw new Error("Route generation failed.");
-
-      setLoadingMessage("Connecting streets...");
-      
-      const allSelectedNodeIds = result.stages.flatMap(s => s.nodeIds || []);
-      const uniqueNodeIds = allSelectedNodeIds.filter((id, i, arr) => i === 0 || id !== arr[i-1]);
-      
-      const resolvedNodes = uniqueNodeIds
-        .map(id => network.nodeMap.get(id))
-        .filter((n): n is OSMNode => !!n)
-        .map(n => ({ lat: n.lat, lng: n.lng }));
-
-      console.log("[DEBUG] Connecting nodes with OSRM...", { nodeCount: resolvedNodes.length });
-
-      const routedPoints = await routingService.connectNodesWithOSRM(resolvedNodes);
-      console.log("[DEBUG] OSRM routing complete", { coordinateCount: routedPoints.length });
-
-      let ideal: Point[] = [];
-      if (state.mode === "shapes") {
-        switch (state.selectedShape) {
-          case "heart": ideal = generateHeart(userLocation, distInKm); break;
-          case "star": ideal = generateStar(userLocation, distInKm); break;
-          case "infinity": ideal = generateInfinity(userLocation, distInKm); break;
-          default: ideal = generateCircle(userLocation, distInKm);
-        }
-      } else if (state.mode === "text" && validText) {
-        ideal = generateText(validText, userLocation, distInKm);
-      }
-
-      updateState({
-        isGenerating: false,
-        hasResult: true,
-        idealCoords: ideal,
-        snappedCoords: routedPoints,
-        routeFidelity: fitness.overallFitness,
-        distance: validDist,
-        textInput: validText
-      }, true);
 
       lastGenerationTime.current = Date.now();
       if (isMobile) setIsSheetOpen(true);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "An unexpected error occurred.");
+      let msg = err.message || "An unexpected error occurred.";
+      if (msg === "Failed to fetch") {
+        msg = "The routing server (OSRM) is currently unreachable or overloaded. Please try again in a few moments.";
+      }
+      setError(msg);
       updateState({ isGenerating: false }, false);
     } finally {
       setLoadingMessage("");
@@ -509,6 +514,26 @@ export default function App() {
 
   const selectedShapeLabel = SHAPES.find(s => s.id === state.selectedShape)?.label || "Custom";
 
+  const {
+    waypoints: nudgedWaypoints,
+    fitnessScore: nudgedFitness,
+    handleWaypointDrag,
+    segmentAccuracy,
+    highlightedLetter
+  } = useNudgeInterface({
+    inputType: state.mode,
+    initialWaypoints: state.snappedCoords.map((p, i) => ({ ...p, nodeId: "", id: `w-${i}` })),
+    originalShape: state.normalizedDrawnPath,
+    osmNodes: state.nodeMap || new Map(),
+    distanceKm: state.unit === "mi" ? state.distance * 1.60934 : state.distance,
+    centerLat: userLocation.lat,
+    centerLng: userLocation.lng,
+    onRouteChange: ({ waypoints, updatedSegment }) => {
+      // We could update the polyline here if we wanted real-time visual feedback of the "snapped" line
+      // For now, we'll just update the waypoints
+    }
+  });
+
   return (
     <div className="flex flex-col md:flex-row h-screen w-full bg-bg-primary overflow-hidden font-sans">
       {/* Sidebar (Desktop) / Bottom Sheet (Mobile) */}
@@ -569,6 +594,7 @@ export default function App() {
                     shapeLabel={selectedShapeLabel}
                     fidelity={state.routeFidelity}
                     onRegenerate={handleGenerate}
+                    onFineTune={() => setIsNudging(true)}
                     failingStages={generationProgress.failingStages}
                   />
                 ) : (
@@ -584,6 +610,7 @@ export default function App() {
                       setFontStyle={(id) => updateState({ fontStyle: id })}
                       drawnPath={state.drawnPath}
                       setDrawnPath={(path) => updateState({ drawnPath: path })}
+                      setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path })}
                     />
 
                     <RouteSettings 
@@ -843,6 +870,36 @@ export default function App() {
           hasResult={state.hasResult}
           center={userLocation}
         />
+        
+        {/* Nudge Interface Overlay */}
+        <AnimatePresence>
+          {isNudging && state.hasResult && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-[2000] bg-bg-primary"
+            >
+              <NudgeMap
+                inputType={state.mode}
+                routePolyline={state.snappedCoords.map(p => [p.lng, p.lat])}
+                waypoints={nudgedWaypoints}
+                ghostShape={state.idealCoords}
+                segmentAccuracy={segmentAccuracy}
+                fitnessScore={nudgedFitness || state.routeFidelity}
+                highlightedLetter={highlightedLetter}
+                onWaypointDrag={handleWaypointDrag}
+                centerLat={userLocation.lat}
+                centerLng={userLocation.lng}
+                onClose={() => setIsNudging(false)}
+                onSave={() => {
+                  updateState({ snappedCoords: nudgedWaypoints.map(({ lat, lng }) => ({ lat, lng })) }, true);
+                  setIsNudging(false);
+                }}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
         
         {/* Map Overlays */}
         <div className="absolute top-6 left-6 z-[1000] hidden md:block">

@@ -3,8 +3,9 @@ import { cn } from "@/src/lib/utils";
 import { InputMode } from "@/src/types";
 import { motion } from "motion/react";
 import { Pencil, Trash2, Check, Keyboard, Type } from "lucide-react";
-import { Point } from "@/src/lib/shapeMath";
+import { Point, NormalizedPoint } from "@/src/lib/shapeMath";
 import React, { useRef, useEffect, useState } from "react";
+import { DrawingCanvas } from "./DrawingCanvas";
 
 interface DesignInputProps {
   mode: InputMode;
@@ -17,6 +18,7 @@ interface DesignInputProps {
   setFontStyle: (id: string) => void;
   drawnPath: Point[];
   setDrawnPath: (path: Point[]) => void;
+  setNormalizedDrawnPath: (path: NormalizedPoint[]) => void;
 }
 
 export default function DesignInput({
@@ -30,75 +32,16 @@ export default function DesignInput({
   setFontStyle,
   drawnPath,
   setDrawnPath,
+  setNormalizedDrawnPath,
 }: DesignInputProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [localPath, setLocalPath] = useState<Point[]>([]);
-
-  // Clear canvas when mode changes to draw
-  useEffect(() => {
-    if (mode === "draw") {
-      clearCanvas();
-    }
-  }, [mode]);
-
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = ("touches" in e) ? e.touches[0].clientX - rect.left : (e as React.MouseEvent).clientX - rect.left;
-    const y = ("touches" in e) ? e.touches[0].clientY - rect.top : (e as React.MouseEvent).clientY - rect.top;
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    setIsDrawing(true);
-    setLocalPath([{ lat: y, lng: x }]);
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = ("touches" in e) ? e.touches[0].clientX - rect.left : (e as React.MouseEvent).clientX - rect.left;
-    const y = ("touches" in e) ? e.touches[0].clientY - rect.top : (e as React.MouseEvent).clientY - rect.top;
-
-    ctx.lineTo(x, y);
-    ctx.strokeStyle = "#FF2D6B";
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    setLocalPath(prev => [...prev, { lat: y, lng: x }]);
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
-    if (localPath.length >= 2) {
-      setDrawnPath(localPath);
-    }
-  };
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    setLocalPath([]);
-    setDrawnPath([]);
-  };
-
-  const handleUseShape = () => {
-    if (localPath.length > 0) {
-      setDrawnPath(localPath);
-    }
+  const handleShapeComplete = (points: NormalizedPoint[]) => {
+    setNormalizedDrawnPath(points);
+    // Convert normalized points back to a rough lat/lng for preview
+    const previewPoints = points.map(p => ({
+      lat: p.y * 100,
+      lng: p.x * 100
+    }));
+    setDrawnPath(previewPoints);
   };
 
   return (
@@ -198,57 +141,13 @@ export default function DesignInput({
 
         {mode === "draw" && (
           <div className="space-y-4">
-            <div className="relative aspect-square w-full bg-bg-card rounded-[16px] border border-divider overflow-hidden group">
-              <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#505050 1px, transparent 1px)', backgroundSize: '16px 16px' }} />
-              <canvas
-                ref={canvasRef}
-                width={300}
-                height={300}
-                onMouseDown={startDrawing}
-                onMouseMove={draw}
-                onMouseUp={stopDrawing}
-                onMouseLeave={stopDrawing}
-                onTouchStart={startDrawing}
-                onTouchMove={draw}
-                onTouchEnd={stopDrawing}
-                className="w-full h-full cursor-crosshair relative z-10"
-              />
-              <div className="absolute top-4 left-4 flex gap-2 z-20">
-                <button className="p-2 bg-bg-subtle rounded-lg text-accent-primary border border-accent-primary/20">
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={clearCanvas}
-                  className="p-2 bg-bg-subtle rounded-lg text-text-secondary hover:text-white transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-                <div className="ml-2 flex flex-col justify-center">
-                  <p className="text-[10px] font-bold text-text-secondary uppercase tracking-widest leading-none">Draw</p>
-                  <p className="text-[8px] text-text-muted mt-0.5">Single stroke</p>
-                </div>
+            <DrawingCanvas onShapeComplete={handleShapeComplete} />
+            {drawnPath.length > 0 && (
+              <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full backdrop-blur-md w-fit mx-auto">
+                <Check className="w-3 h-3 text-success" />
+                <span className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Captured</span>
               </div>
-              {drawnPath.length > 0 && (
-                <div className="absolute bottom-4 right-4 z-20">
-                  <div className="flex items-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full backdrop-blur-md">
-                    <Check className="w-3 h-3 text-success" />
-                    <span className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Saved</span>
-                  </div>
-                </div>
-              )}
-            </div>
-            <button
-              onClick={handleUseShape}
-              disabled={localPath.length < 2}
-              className={cn(
-                "w-full flex items-center justify-center gap-2 py-3 rounded-[12px] border text-[15px] font-sans font-bold transition-all",
-                localPath.length >= 2 
-                  ? "border-accent-primary text-accent-primary hover:bg-accent-primary/5" 
-                  : "border-divider text-text-muted cursor-not-allowed"
-              )}
-            >
-              {drawnPath.length > 0 ? "Update Shape →" : "Use This Shape →"}
-            </button>
+            )}
           </div>
         )}
       </motion.div>

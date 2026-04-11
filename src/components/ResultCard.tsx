@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { Download, Share2, RefreshCw, Footprints, Clock, Heart, CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+import { Download, Share2, RefreshCw, Footprints, Clock, Heart, CheckCircle2, AlertTriangle, XCircle, Settings } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 
 interface ResultCardProps {
@@ -8,6 +8,7 @@ interface ResultCardProps {
   shapeLabel: string;
   fidelity: number;
   onRegenerate: () => void;
+  onFineTune: () => void;
   failingStages?: number[];
 }
 
@@ -17,6 +18,7 @@ export default function ResultCard({
   shapeLabel,
   fidelity,
   onRegenerate,
+  onFineTune,
   failingStages = [],
 }: ResultCardProps) {
   const getStatusColor = (score: number) => {
@@ -94,14 +96,24 @@ export default function ResultCard({
       </div>
 
       {/* Action Buttons */}
-      <div className="flex gap-3">
-        <button className="flex-1 h-[48px] flex items-center justify-center gap-2 rounded-[12px] bg-accent-primary text-white text-[15px] font-sans font-bold hover:bg-accent-secondary transition-all group">
-          <Download className="w-5 h-5" />
-          Export GPX
-        </button>
-        <button className="flex-1 h-[48px] flex items-center justify-center gap-2 rounded-[12px] bg-bg-card border border-accent-primary text-white text-[15px] font-sans font-bold hover:bg-bg-subtle transition-all group">
-          <Share2 className="w-5 h-5 text-accent-primary" />
-          Share Route
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-3">
+          <button className="flex-1 h-[48px] flex items-center justify-center gap-2 rounded-[12px] bg-accent-primary text-white text-[15px] font-sans font-bold hover:bg-accent-secondary transition-all group">
+            <Download className="w-5 h-5" />
+            Export GPX
+          </button>
+          <button className="flex-1 h-[48px] flex items-center justify-center gap-2 rounded-[12px] bg-bg-card border border-accent-primary text-white text-[15px] font-sans font-bold hover:bg-bg-subtle transition-all group">
+            <Share2 className="w-5 h-5 text-accent-primary" />
+            Share Route
+          </button>
+        </div>
+        
+        <button 
+          onClick={onFineTune}
+          className="w-full h-[48px] flex items-center justify-center gap-2 rounded-[12px] bg-bg-subtle border border-divider text-white text-[15px] font-sans font-bold hover:border-accent-primary transition-all"
+        >
+          <Settings className="w-5 h-5 text-accent-primary" />
+          Fine-tune Route (Manual Nudge)
         </button>
       </div>
 

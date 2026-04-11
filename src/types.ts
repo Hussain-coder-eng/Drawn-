@@ -18,4 +18,6 @@ export interface DrawnState {
   idealCoords: Point[];
   snappedCoords: Point[];
   drawnPath: Point[];
+  normalizedDrawnPath: { x: number; y: number }[];
+  nodeMap?: Map<string, Point>;
 }

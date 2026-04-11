@@ -18,27 +18,29 @@ export const SHAPE_SCRIPTS: Record<string, ShapeScript> = {
   heart: {
     name: "Heart",
     stages: [
-      { stage: 1, direction: "NE", turn: "curve-right", distancePct: 15, description: "Curve up and to the right forming the top-right lobe of the heart" },
-      { stage: 2, direction: "SE", turn: "curve-right", distancePct: 15, description: "Curve down and right, completing the right lobe" },
-      { stage: 3, direction: "S",  turn: "sharp-left",  distancePct: 20, description: "Head south converging toward the bottom point of the heart" },
-      { stage: 4, direction: "SW", turn: "sharp-right", distancePct: 20, description: "Mirror back up toward the left, passing through the bottom point" },
-      { stage: 5, direction: "NW", turn: "curve-right", distancePct: 15, description: "Curve up and left forming the top-left lobe" },
-      { stage: 6, direction: "NE", turn: "close-loop",  distancePct: 15, description: "Curve back to the starting point closing the top of the heart" }
+      { stage: 1, direction: "NE", turn: "curve-right", distancePct: 10, description: "Start of right lobe" },
+      { stage: 2, direction: "E",  turn: "curve-right", distancePct: 10, description: "Top curve of right lobe" },
+      { stage: 3, direction: "SE", turn: "curve-right", distancePct: 10, description: "Side of right lobe" },
+      { stage: 4, direction: "S",  turn: "sharp-left",  distancePct: 20, description: "Heading to bottom point" },
+      { stage: 5, direction: "SW", turn: "sharp-right", distancePct: 20, description: "Mirroring back up" },
+      { stage: 6, direction: "NW", turn: "curve-right", distancePct: 10, description: "Side of left lobe" },
+      { stage: 7, direction: "W",  turn: "curve-right", distancePct: 10, description: "Top curve of left lobe" },
+      { stage: 8, direction: "NE", turn: "close-loop",  distancePct: 10, description: "Closing the heart" }
     ]
   },
   star: {
     name: "Star",
     stages: [
-      { stage: 1, direction: "NE", turn: "sharp-right", distancePct: 10, description: "Outward spike to the top-right" },
+      { stage: 1, direction: "NE", turn: "sharp-right", distancePct: 10, description: "Top-right point" },
       { stage: 2, direction: "SE", turn: "sharp-left",  distancePct: 10, description: "Inward valley" },
-      { stage: 3, direction: "E",  turn: "sharp-right", distancePct: 10, description: "Outward spike to the right" },
+      { stage: 3, direction: "E",  turn: "sharp-right", distancePct: 10, description: "Right point" },
       { stage: 4, direction: "SW", turn: "sharp-left",  distancePct: 10, description: "Inward valley" },
-      { stage: 5, direction: "SE", turn: "sharp-right", distancePct: 10, description: "Outward spike to the bottom-right" },
+      { stage: 5, direction: "SE", turn: "sharp-right", distancePct: 10, description: "Bottom-right point" },
       { stage: 6, direction: "W",  turn: "sharp-left",  distancePct: 10, description: "Inward valley" },
-      { stage: 7, direction: "SW", turn: "sharp-right", distancePct: 10, description: "Outward spike to the bottom-left" },
+      { stage: 7, direction: "SW", turn: "sharp-right", distancePct: 10, description: "Bottom-left point" },
       { stage: 8, direction: "NW", turn: "sharp-left",  distancePct: 10, description: "Inward valley" },
-      { stage: 9, direction: "W",  turn: "sharp-right", distancePct: 10, description: "Outward spike to the left" },
-      { stage: 10, direction: "NE", turn: "close-loop", distancePct: 10, description: "Inward valley closing back to start" }
+      { stage: 9, direction: "W",  turn: "sharp-right", distancePct: 10, description: "Left point" },
+      { stage: 10, direction: "NE", turn: "close-loop", distancePct: 10, description: "Closing back to start" }
     ]
   },
   circle: {

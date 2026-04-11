@@ -6,22 +6,20 @@ import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness } from "./fitnessService";
 
 const SYSTEM_PROMPT = `
-You are a precision GPS route planner. Your task is to select key "Anchor Points" (waypoints) from a road network to draw a specific shape.
+You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
 
-CRITICAL RULES:
-- Only use node IDs from the provided nodes list — never invent coordinates.
+RULES:
+- Use ONLY provided node IDs.
 - Follow stages in strict order.
-- Each stage must travel in the specified compass direction.
-- Select "Anchor Points" that define the "skeleton" of the shape (corners, curves, apexes).
-- The final node of each stage becomes the first node of the next stage.
-- The last node of the final stage must be the same as the start node (closed loop).
-- Avoid backtracking. Every node must progress the route in the stage direction.
-- Between stages, take the most direct available road to transition.
-- Each stage should typically have 3-6 high-quality Anchor Points.
-- If a road doesn't exist in the exact direction, pick the closest one that still makes progress.
-- IMPORTANT: Every stage in the "stages" array MUST have a "nodeIds" array, even if it only contains 2 nodes.
+- Each stage MUST travel in the specified compass direction.
+- PRIORITIZE "Visual Silhouette": Pick nodes that define the corners, curves, and apexes of the shape.
+- Select 4-8 Anchor Points per stage for high-fidelity tracing.
+- Final node of a stage MUST be the first node of the next stage.
+- Last node of the final stage MUST match the start node (closed loop).
+- Avoid backtracking. Every node must progress the route.
+- Every stage in the "stages" array MUST have a "nodeIds" array.
 
-Return ONLY the JSON object with the exact keys "startNodeId" and "stages". Each stage object MUST use the keys "stageNumber" and "nodeIds".
+Return ONLY JSON:
 {
   "startNodeId": "1",
   "stages": [
@@ -45,17 +43,29 @@ export class GeminiService {
     return new GoogleGenAI({ apiKey });
   }
 
-  private async callWithRetry(fn: () => Promise<any>, maxRetries = 3): Promise<any> {
+  private async callWithRetry(fn: () => Promise<any>, maxRetries = 4): Promise<any> {
     let attempt = 0;
     while (attempt < maxRetries) {
       try {
         return await fn();
       } catch (error: any) {
         attempt++;
-        const isRateLimit = error.message?.includes("429") || error.status === "RESOURCE_EXHAUSTED" || JSON.stringify(error).includes("429");
+        const errorStr = JSON.stringify(error);
+        const isRateLimit = error.message?.includes("429") || 
+                            error.status === "RESOURCE_EXHAUSTED" || 
+                            errorStr.includes("429") ||
+                            errorStr.includes("RESOURCE_EXHAUSTED");
         
+        const isQuotaExceeded = errorStr.includes("exceeded your current quota") || 
+                                error.message?.includes("quota");
+
+        if (isQuotaExceeded) {
+          throw new Error("Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. Please try again tomorrow or check your API plan.");
+        }
+
         if (isRateLimit && attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+          // Exponential backoff: 2s, 4s, 8s, 16s...
+          const delay = Math.pow(2, attempt) * 2000 + Math.random() * 1000;
           console.warn(`[DEBUG] Gemini Rate Limit hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
@@ -209,14 +219,6 @@ Follow the compass bearing for each stage using whatever roads are available.
 
     const failingStageNumbers = (fitnessResult.failingStages || []).map(s => s.stageNumber);
     
-    // Map previous results to indices
-    const lockedStages = (previousResult.stages || [])
-      .filter(s => !failingStageNumbers.includes(s.stageNumber))
-      .map(s => ({
-        stageNumber: s.stageNumber,
-        nodeIds: s.nodeIds.map(id => idToIndex.get(id)).filter(Boolean)
-      }));
-
     const stageDistances = script.map(s => ({
       ...s,
       targetDistanceKm: (s.distancePct / 100) * distanceKm
@@ -241,13 +243,12 @@ Stage ${s.stageNumber}:
 `;
 }).join('\n')}
 
-The following stages PASSED and must remain exactly as returned previously (using the new node IDs):
-${JSON.stringify(lockedStages)}
-
 Available road nodes (ID: lat, lng):
 ${nodesForAI}
 
-Replan ONLY the failing stages. Keep all locked stages unchanged.
+Replan ONLY the failing stages listed above. 
+Return a JSON object with a "stages" array containing ONLY the replanned stages.
+Each stage MUST have "stageNumber" and "nodeIds".
 `;
 
     let response;
@@ -262,7 +263,6 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              startNodeId: { type: Type.STRING },
               stages: {
                 type: Type.ARRAY,
                 items: {
@@ -278,7 +278,7 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
                 }
               }
             },
-            required: ["startNodeId", "stages"]
+            required: ["stages"]
           }
         }
       }));
@@ -296,20 +296,46 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
     try {
       const repaired = jsonrepair(text);
       const result = JSON.parse(repaired);
-      this.validateRawResult(result);
+      
+      // Basic validation of the new stages
+      if (!result.stages || !Array.isArray(result.stages)) {
+        throw new Error("AI returned invalid refinement data.");
+      }
 
-      // Map indices back to real OSM IDs
+      // Map indices back to real OSM IDs for the new stages
+      const newStagesMap = new Map<number, number[]>();
+      result.stages.forEach((s: any) => {
+        // Apply same hallucination fixes as validateRawResult
+        if (!s.nodeIds && s.anchorPoints) s.nodeIds = s.anchorPoints;
+        if (!s.nodeIds && s.nodes) s.nodeIds = s.nodes;
+        if (s.stage_number && !s.stageNumber) s.stageNumber = s.stage_number;
+
+        if (s.stageNumber !== undefined && Array.isArray(s.nodeIds)) {
+          const realIds = s.nodeIds.map((idx: any) => indexToId.get(String(idx))).filter(Boolean);
+          if (realIds.length > 0) {
+            newStagesMap.set(s.stageNumber, realIds);
+          }
+        }
+      });
+
+      // Merge with previous results
+      const mergedStages = previousResult.stages.map(oldStage => {
+        if (newStagesMap.has(oldStage.stageNumber)) {
+          return {
+            stageNumber: oldStage.stageNumber,
+            nodeIds: newStagesMap.get(oldStage.stageNumber)!
+          };
+        }
+        return oldStage;
+      });
+
       return {
-        startNodeId: indexToId.get(String(result.startNodeId)) || previousResult.startNodeId,
-        stages: result.stages.map((s: any) => ({
-          stageNumber: s.stageNumber,
-          nodeIds: (s.nodeIds || []).map((idx: any) => indexToId.get(String(idx))).filter(Boolean)
-        }))
+        startNodeId: previousResult.startNodeId,
+        stages: mergedStages
       };
     } catch (e: any) {
-      if (e.message.startsWith("AI returned")) throw e;
-      console.error("[DEBUG] Failed to parse Gemini response:", text, e);
-      throw new Error(`Failed to parse AI response: ${e.message}`);
+      console.error("[DEBUG] Failed to parse Gemini refinement response:", text, e);
+      throw new Error(`Failed to parse AI refinement: ${e.message}`);
     }
   }
 
@@ -324,11 +350,14 @@ Replan ONLY the failing stages. Keep all locked stages unchanged.
       throw new Error("AI returned an empty stages array.");
     }
     
+    // Filter out any null/undefined/empty objects that might have slipped through
+    result.stages = result.stages.filter((s: any) => s && typeof s === "object" && Object.keys(s).length > 0);
+
+    if (result.stages.length === 0) {
+      throw new Error("AI returned stages, but they were all empty objects.");
+    }
+
     result.stages.forEach((stage: any, index: number) => {
-      if (!stage || typeof stage !== "object") {
-        throw new Error(`AI returned an invalid stage object at index ${index}.`);
-      }
-      
       // Handle common AI hallucinations for key names
       if (!stage.nodeIds && stage.anchorPoints) stage.nodeIds = stage.anchorPoints;
       if (!stage.nodeIds && stage.nodes) stage.nodeIds = stage.nodes;
