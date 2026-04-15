@@ -1,5 +1,6 @@
 import * as turf from "@turf/turf";
 import { Point } from "../lib/shapeMath";
+import { measureLatency } from "../lib/latency";
 
 const OSRM_MIRRORS = [
   "https://router.project-osrm.org",
@@ -11,6 +12,8 @@ const ORS_BASE_URL = "https://api.openrouteservice.org/v2";
 export class RoutingService {
   private orsApiKey: string;
   private currentMirrorIndex: number = 0;
+  private snapCache: Map<string, Point> = new Map();
+  private mirrorPerformance: Map<string, number[]> = new Map();
 
   constructor(orsApiKey: string = "") {
     this.orsApiKey = orsApiKey;
@@ -20,20 +23,26 @@ export class RoutingService {
     let response;
     let retriesPerMirror = 2;
     
+    const mirrors = this.getSortedMirrors();
+    
     // Try each mirror
-    for (let m = 0; m < OSRM_MIRRORS.length; m++) {
-      const mirror = OSRM_MIRRORS[(this.currentMirrorIndex + m) % OSRM_MIRRORS.length];
+    for (const mirror of mirrors) {
       const fullUrl = `${mirror}${urlPath}`;
+      const mirrorName = new URL(mirror).hostname;
       
       let attempt = 0;
       while (attempt < retriesPerMirror) {
         try {
-          response = await fetch(fullUrl, {
-            signal: AbortSignal.timeout(8000) // 8s timeout per attempt
-          });
+          const { data: res, latencyMs } = await measureLatency(`OSRM:${mirrorName}`, async () => {
+            return await fetch(fullUrl, {
+              signal: AbortSignal.timeout(8000) // 8s timeout per attempt
+            });
+          }, { silent: true });
+          
+          response = res;
+          this.recordLatency(mirror, latencyMs);
           
           if (response.ok) {
-            this.currentMirrorIndex = (this.currentMirrorIndex + m) % OSRM_MIRRORS.length;
             return await response.json();
           }
           
@@ -56,12 +65,40 @@ export class RoutingService {
 
   // 3a - Nearest Street Snap
   async snapToNearest(point: Point): Promise<Point> {
+    const cacheKey = `${point.lat.toFixed(5)},${point.lng.toFixed(5)}`;
+    if (this.snapCache.has(cacheKey)) return this.snapCache.get(cacheKey)!;
+
     const data = await this.fetchOSRM(`/nearest/v1/driving/${point.lng},${point.lat}?number=1`);
     if (data && data.code === "Ok" && data.waypoints.length > 0) {
       const snapped = data.waypoints[0].location;
-      return { lat: snapped[1], lng: snapped[0] };
+      const result = { lat: snapped[1], lng: snapped[0] };
+      this.snapCache.set(cacheKey, result);
+      return result;
     }
     return point;
+  }
+
+  private getSortedMirrors(): string[] {
+    return [...OSRM_MIRRORS].sort((a, b) => {
+      const perfA = this.getAverageLatency(a);
+      const perfB = this.getAverageLatency(b);
+      return perfA - perfB;
+    });
+  }
+
+  private getAverageLatency(mirror: string): number {
+    const history = this.mirrorPerformance.get(mirror);
+    if (!history || history.length === 0) return 0;
+    return history.reduce((a, b) => a + b, 0) / history.length;
+  }
+
+  private recordLatency(mirror: string, latency: number) {
+    if (!this.mirrorPerformance.has(mirror)) {
+      this.mirrorPerformance.set(mirror, []);
+    }
+    const history = this.mirrorPerformance.get(mirror)!;
+    history.push(latency);
+    if (history.length > 5) history.shift();
   }
 
   // Parallel batch snap
@@ -172,10 +209,23 @@ export class RoutingService {
       }
     }
 
+    // Filter out any invalid coordinates that might have slipped through from OSRM
+    const validCoords = allCoords.filter(c => 
+      typeof c[0] === 'number' && typeof c[1] === 'number' && 
+      !isNaN(c[0]) && !isNaN(c[1])
+    );
+
+    if (validCoords.length < 2) {
+      throw new Error("OSRM returned insufficient valid coordinates for routing.");
+    }
+
     const anchorVerification = lockedIndices.map(idx => {
       const anchor = waypointArray[idx];
+      if (typeof anchor.lat !== 'number' || typeof anchor.lng !== 'number' || isNaN(anchor.lat) || isNaN(anchor.lng)) {
+        return { anchorLat: 0, anchorLng: 0, distanceFromPolylineM: Infinity, passed: false };
+      }
       const anchorPoint = turf.point([anchor.lng, anchor.lat]);
-      const polyline = turf.lineString(allCoords);
+      const polyline = turf.lineString(validCoords);
       const snapped = turf.nearestPointOnLine(polyline, anchorPoint, { units: 'meters' });
       return {
         anchorLat: anchor.lat,
@@ -186,7 +236,7 @@ export class RoutingService {
     });
 
     return {
-      polylineCoords: allCoords,
+      polylineCoords: validCoords,
       anchorVerification
     };
   }

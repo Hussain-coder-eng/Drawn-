@@ -81,4 +81,43 @@
     0% { transform: scale(1); opacity: 0.8; }
     100% { transform: scale(2.5); opacity: 0; }
   }
+
+  /* Run Mode Styles */
+  .run-hud-top {
+    @apply flex justify-between items-center max-w-md mx-auto;
+  }
+
+  .turn-alert-card {
+    @apply bg-bg-card/90 backdrop-blur-xl border border-accent-primary/50 rounded-2xl p-4 shadow-2xl flex items-center gap-4;
+  }
+
+  .next-turn-strip {
+    @apply bg-bg-card/60 backdrop-blur-md px-4 py-2 rounded-full border border-divider flex items-center gap-3;
+  }
+
+  .runner-marker {
+    @apply relative w-10 h-10 flex items-center justify-center;
+  }
+
+  .runner-dot {
+    @apply relative w-4 h-4 bg-accent-primary rounded-full border-2 border-white shadow-[0_0_15px_rgba(255,45,107,0.8)] flex items-center justify-center;
+  }
+
+  .runner-pulse-ring {
+    @apply absolute inset-0 bg-accent-primary rounded-full;
+    animation: sonar 2s infinite;
+  }
+
+  .off-route-warning {
+    @apply bg-danger/90 backdrop-blur-xl p-6 rounded-[24px] text-center space-y-2 border border-white/20 shadow-2xl;
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .countdown-overlay {
+    @apply absolute inset-0 z-[5005] bg-bg-primary flex flex-col items-center justify-center text-center p-6;
+  }
+
+  .pause-menu {
+    @apply absolute inset-0 z-[5010] bg-bg-primary/95 backdrop-blur-xl flex flex-col p-8;
+  }
 }

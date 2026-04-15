@@ -42,6 +42,7 @@ export function useNudgeInterface({
     let nearestDist = maxDistanceM;
 
     for (const [nodeId, node] of osmNodes.entries()) {
+      if (typeof node.lat !== 'number' || typeof node.lng !== 'number' || isNaN(node.lat) || isNaN(node.lng)) continue;
       const dist = turf.distance(
         turf.point([lng, lat]),
         turf.point([node.lng, node.lat]),
@@ -65,8 +66,9 @@ export function useNudgeInterface({
   }, [osmNodes]);
 
   const recalculateFitness = useCallback((currentWaypoints: Waypoint[], originalShape: NormalizedPoint[], inputType: string) => {
-    if (currentWaypoints.length < 2) return 0;
-    const routeLine = turf.lineString(currentWaypoints.map(w => [w.lng, w.lat]));
+    const validWaypoints = currentWaypoints.filter(w => typeof w.lat === 'number' && typeof w.lng === 'number' && !isNaN(w.lat) && !isNaN(w.lng));
+    if (validWaypoints.length < 2) return 0;
+    const routeLine = turf.lineString(validWaypoints.map(w => [w.lng, w.lat]));
 
     const radiusKm = (distanceKm / (2 * Math.PI)) * 1.5;
     const idealPoints = originalShape.map(p => ({
@@ -154,8 +156,9 @@ export function useNudgeInterface({
   };
 
   const computeSegmentAccuracy = useCallback((currentWaypoints: Waypoint[], originalShape: NormalizedPoint[]) => {
-    if (currentWaypoints.length < 2) return [];
-    const routeLine = turf.lineString(currentWaypoints.map(w => [w.lng, w.lat]));
+    const validWaypoints = currentWaypoints.filter(w => typeof w.lat === 'number' && typeof w.lng === 'number' && !isNaN(w.lat) && !isNaN(w.lng));
+    if (validWaypoints.length < 2) return [];
+    const routeLine = turf.lineString(validWaypoints.map(w => [w.lng, w.lat]));
     const radiusKm = (distanceKm / (2 * Math.PI)) * 1.5;
 
     return originalShape.map((p, i) => {

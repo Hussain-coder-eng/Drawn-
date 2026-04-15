@@ -384,10 +384,14 @@ export function generateScriptFromPath(path: Point[]): RouteStage[] {
       // Calculate distance of this stage
       let stageDist = 0;
       for (let j = 1; j < currentStagePoints.length; j++) {
-        stageDist += turf.distance(
-          turf.point([currentStagePoints[j-1].lng, currentStagePoints[j-1].lat]),
-          turf.point([currentStagePoints[j].lng, currentStagePoints[j].lat])
-        );
+        const p1 = currentStagePoints[j - 1];
+        const p2 = currentStagePoints[j];
+        if (typeof p1.lat === 'number' && typeof p1.lng === 'number' && typeof p2.lat === 'number' && typeof p2.lng === 'number' && !isNaN(p1.lat) && !isNaN(p1.lng) && !isNaN(p2.lat) && !isNaN(p2.lng)) {
+          stageDist += turf.distance(
+            turf.point([p1.lng, p1.lat]),
+            turf.point([p2.lng, p2.lat])
+          );
+        }
       }
 
       stages.push({

@@ -41,6 +41,21 @@
       "properties": {
         "generations": { "type": "array", "items": { "type": "string", "format": "date-time" } }
       }
+    },
+    "Run": {
+      "title": "Completed Run",
+      "description": "A run completed by a user following a GPS art route.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "shapeName": { "type": "string" },
+        "distanceM": { "type": "number" },
+        "elapsedSeconds": { "type": "number" },
+        "avgPaceSecPerKm": { "type": "number" },
+        "completedPolyline": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "completedAt": { "type": "object", "description": "Firestore server timestamp." }
+      },
+      "required": ["userId", "shapeName", "distanceM", "elapsedSeconds", "completedAt"]
     }
   },
   "firestore": {
@@ -55,6 +70,10 @@
     "/rateLimits/{userId}": {
       "schema": "RateLimit",
       "description": "User rate limit tracking."
+    },
+    "/runs/{runId}": {
+      "schema": "Run",
+      "description": "Collection of completed runs."
     }
   }
 }

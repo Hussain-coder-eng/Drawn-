@@ -38,6 +38,19 @@ service cloud.firestore {
     //
     // ===============================================================
 
+    // Collection: runs
+    // Document ID: {runId}
+    // Fields:
+    //   - userId: string (required) - Runner's UID
+    //   - shapeName: string (required)
+    //   - distanceM: number (required)
+    //   - elapsedSeconds: number (required)
+    //   - avgPaceSecPerKm: number (optional)
+    //   - completedPolyline: list (optional)
+    //   - completedAt: timestamp (required)
+    //
+    // ===============================================================
+
     // ===============================================================
     // Helper Functions
     // ===============================================================
@@ -86,6 +99,16 @@ service cloud.firestore {
              data.generations.size() <= 25;
     }
 
+    function isValidRun(data) {
+      return data.keys().hasAll(['userId', 'shapeName', 'distanceM', 'elapsedSeconds', 'completedAt']) &&
+             data.userId == request.auth.uid &&
+             data.shapeName is string &&
+             data.distanceM is number &&
+             data.elapsedSeconds is number &&
+             data.completedAt is timestamp &&
+             (data.completedPolyline is list || !('completedPolyline' in data));
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -107,6 +130,12 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && isValidRateLimit(request.resource.data);
       allow update: if isOwner(userId) && isValidRateLimit(request.resource.data);
+    }
+
+    match /runs/{runId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && isValidRun(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
     }
   }
 }

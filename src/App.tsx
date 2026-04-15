@@ -58,11 +58,11 @@ import {
   generateInfinity,
   generateArrow,
   generateLightning,
-  generateText,
   scaleAndCenter,
   NormalizedPoint,
   adaptiveSimplify,
-  SHAPE_SIMPLIFICATION_CONFIG
+  SHAPE_SIMPLIFICATION_CONFIG,
+  projectShapeToLatLng
 } from "./lib/shapeMath";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
@@ -72,6 +72,9 @@ import { buildStageScript } from "./lib/stageService";
 import { findBestOrientation } from "./services/optimizationService";
 import { useNudgeInterface } from "./hooks/useNudgeInterface";
 import { NudgeMap } from "./components/NudgeMap";
+import { RunScreen } from "./components/RunScreen";
+import { PreRunChecklist } from "./components/PreRunChecklist";
+import { NavRoute, preprocessRouteForNavigation } from "./lib/navigationService";
 
 // Global limiters
 const osrmLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60000 });
@@ -123,6 +126,13 @@ export default function App() {
   const [isSheetOpen, setIsSheetOpen] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [currentScriptStages, setCurrentScriptStages] = useState<number>(0);
+  
+  // Run Mode State
+  const [navRoute, setNavRoute] = useState<NavRoute | null>(null);
+  const [isPreRunChecklistOpen, setIsPreRunChecklistOpen] = useState(false);
+  const [isRunScreenOpen, setIsRunScreenOpen] = useState(false);
+  const [isPreparingRun, setIsPreparingRun] = useState(false);
+
   const [generationProgress, setGenerationProgress] = useState<{
     attempt: number;
     maxAttempts: number;
@@ -135,6 +145,27 @@ export default function App() {
     failingStages: [],
   });
   const lastGenerationTime = useRef<number>(0);
+
+  const handleStartRunFlow = async () => {
+    if (!state.snappedCoords || state.snappedCoords.length === 0) return;
+    
+    setIsPreparingRun(true);
+    setLoadingMessage("Preparing navigation...");
+    
+    try {
+      const processed = await preprocessRouteForNavigation(
+        state.snappedCoords.map(p => [p.lng, p.lat])
+      );
+      setNavRoute(processed);
+      setIsPreRunChecklistOpen(true);
+    } catch (err) {
+      console.error("Failed to prepare run:", err);
+      setError("Failed to prepare navigation data.");
+    } finally {
+      setIsPreparingRun(false);
+      setLoadingMessage("");
+    }
+  };
 
   // Get user location on mount
   useEffect(() => {
@@ -326,17 +357,37 @@ export default function App() {
       }
 
       // 2. Adaptive Simplification
-      const config = SHAPE_SIMPLIFICATION_CONFIG[state.mode === "shapes" ? state.selectedShape || "circle" : state.mode];
+      const configKey = state.mode === "shapes" ? state.selectedShape || "circle" : state.mode;
+      const config = SHAPE_SIMPLIFICATION_CONFIG[configKey] || SHAPE_SIMPLIFICATION_CONFIG.circle;
       const simplifiedPoints = adaptiveSimplify(normalizedPoints, config).points;
 
       setLoadingMessage("Fetching local road network...");
-      const radiusMeters = (distInKm / (2 * Math.PI)) * 1500; // Rough radius for network fetch
-      const network = await overpassService.fetchRoadNetwork(userLocation, radiusMeters, (msg) => {
-        setLoadingMessage(msg);
-      });
+      // Calculate a more robust search area
+      // For a circle, radius is dist / (2*pi). For a line, it's dist/2.
+      // We use a generous multiplier and a minimum floor.
+      const baseRadiusMeters = Math.max(2000, (distInKm * 1000 * 1.0));
+      
+      // Get rough projected points to help Overpass focus on the right area
+      // Use a larger multiplier for the rough anchors to ensure we cover the whole shape
+      const roughRadiusKm = (distInKm / (2 * Math.PI)) * 2.0;
+      const roughAnchors = projectShapeToLatLng(simplifiedPoints, userLocation.lat, userLocation.lng, roughRadiusKm);
 
-      if (network.nodes.length < 20) {
-        throw new Error("Not enough roads found in this area. Try a larger distance.");
+      let network = await overpassService.fetchRoadNetwork(userLocation, baseRadiusMeters, (msg) => {
+        setLoadingMessage(msg);
+      }, roughAnchors);
+
+      // If we didn't find enough roads, try one more time with a much larger area
+      if (network.nodes.length < 80) {
+        setLoadingMessage("Area seems sparse. Expanding search significantly...");
+        // Try a massive 8km radius or 5x the base, whichever is larger
+        const retryRadius = Math.max(8000, baseRadiusMeters * 5);
+        network = await overpassService.fetchRoadNetwork(userLocation, retryRadius, (msg) => {
+          setLoadingMessage(msg);
+        });
+      }
+
+      if (network.nodes.length < 8) {
+        throw new Error("We couldn't find enough roads in this area to form a route. This often happens in very remote areas, private property, or places with restricted access. Try moving your starting point or choosing a larger distance.");
       }
 
       // 3. Rotation and Scale Optimization
@@ -356,8 +407,8 @@ export default function App() {
       setCurrentScriptStages(stages.length);
 
       // 5. AI Node Selection (Gemini)
-      const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], 1)[0];
-      const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, 200);
+      const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], network.edgeMap, 1)[0];
+      const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, network.edgeMap, 800);
 
       let attempt = 1;
       let result: GeminiStagedResult | null = null;
@@ -505,7 +556,7 @@ export default function App() {
         default: return generateCircle(userLocation, distInKm);
       }
     } else if (state.mode === "text" && validText) {
-      return generateText(validText, userLocation, distInKm);
+      return composeWordPath(validText, distInKm, userLocation).waypoints;
     } else if (state.mode === "draw" && state.drawnPath.length > 0) {
       return state.drawnPath;
     }
@@ -595,33 +646,35 @@ export default function App() {
                     fidelity={state.routeFidelity}
                     onRegenerate={handleGenerate}
                     onFineTune={() => setIsNudging(true)}
+                    onStartRun={handleStartRunFlow}
                     failingStages={generationProgress.failingStages}
                   />
                 ) : (
                   <>
                     <DesignInput 
                       mode={state.mode}
-                      setMode={(mode) => updateState({ mode })}
+                      setMode={(mode) => updateState({ mode, hasResult: false })}
                       selectedShape={state.selectedShape}
-                      setSelectedShape={(id) => updateState({ selectedShape: id })}
+                      setSelectedShape={(id) => updateState({ selectedShape: id, hasResult: false })}
                       textInput={state.textInput}
-                      setTextInput={(text) => updateState({ textInput: text })}
+                      setTextInput={(text) => updateState({ textInput: text, hasResult: false })}
                       fontStyle={state.fontStyle}
-                      setFontStyle={(id) => updateState({ fontStyle: id })}
+                      setFontStyle={(id) => updateState({ fontStyle: id, hasResult: false })}
                       drawnPath={state.drawnPath}
-                      setDrawnPath={(path) => updateState({ drawnPath: path })}
-                      setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path })}
+                      setDrawnPath={(path) => updateState({ drawnPath: path, hasResult: false })}
+                      setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
                     />
 
                     <RouteSettings 
                       distance={state.distance}
-                      setDistance={(d) => updateState({ distance: d })}
+                      setDistance={(d) => updateState({ distance: d, hasResult: false })}
                       unit={state.unit}
-                      setUnit={(u) => updateState({ unit: u })}
+                      setUnit={(u) => updateState({ unit: u, hasResult: false })}
                       location={state.location}
-                      setLocation={(l) => updateState({ location: l })}
+                      setLocation={(l) => updateState({ location: l, hasResult: false })}
+                      setUserLocation={(p) => setUserLocation(p)}
                       surface={state.surface}
-                      setSurface={(s) => updateState({ surface: s })}
+                      setSurface={(s) => updateState({ surface: s, hasResult: false })}
                     />
 
                     <div className="space-y-4 pt-4">
@@ -909,6 +962,29 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Run Mode Overlays */}
+      <AnimatePresence>
+        {isPreRunChecklistOpen && navRoute && (
+          <PreRunChecklist 
+            navRoute={navRoute}
+            shapeName={state.mode === 'shapes' ? state.selectedShape : state.mode === 'text' ? 'Text' : 'Drawn'}
+            onProceed={() => {
+              setIsPreRunChecklistOpen(false);
+              setIsRunScreenOpen(true);
+            }}
+            onCancel={() => setIsPreRunChecklistOpen(false)}
+          />
+        )}
+        
+        {isRunScreenOpen && navRoute && (
+          <RunScreen 
+            navRoute={navRoute}
+            shapeName={state.mode === 'shapes' ? state.selectedShape : state.mode === 'text' ? 'Text' : 'Drawn'}
+            onClose={() => setIsRunScreenOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Bottom Navigation (Mobile) */}
       <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />

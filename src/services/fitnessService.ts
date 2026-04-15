@@ -143,8 +143,10 @@ export class FitnessService {
     // Measure max deviation
     let maxDev = 0;
     ideal.forEach(p1 => {
+      if (typeof p1.lat !== 'number' || typeof p1.lng !== 'number' || isNaN(p1.lat) || isNaN(p1.lng)) return;
       let minDist = Infinity;
       actual.forEach(p2 => {
+        if (typeof p2.lat !== 'number' || typeof p2.lng !== 'number' || isNaN(p2.lat) || isNaN(p2.lng)) return;
         const d = turf.distance(turf.point([p1.lng, p1.lat]), turf.point([p2.lng, p2.lat]));
         if (d < minDist) minDist = d;
       });
@@ -164,8 +166,14 @@ export class FitnessService {
   }
 
   private calculateDirectionScore(nodes: Point[], targetDir: string): number {
-    const start = turf.point([nodes[0].lng, nodes[0].lat]);
-    const end = turf.point([nodes[nodes.length - 1].lng, nodes[nodes.length - 1].lat]);
+    const n1 = nodes[0];
+    const n2 = nodes[nodes.length - 1];
+    if (typeof n1.lat !== 'number' || typeof n1.lng !== 'number' || isNaN(n1.lat) || isNaN(n1.lng) ||
+        typeof n2.lat !== 'number' || typeof n2.lng !== 'number' || isNaN(n2.lat) || isNaN(n2.lng)) {
+      return 0;
+    }
+    const start = turf.point([n1.lng, n1.lat]);
+    const end = turf.point([n2.lng, n2.lat]);
     const actualBearing = (turf.bearing(start, end) + 360) % 360;
     const targetBearing = DIRECTION_MAP[targetDir] || 0;
 
@@ -178,7 +186,9 @@ export class FitnessService {
   }
 
   private calculateDistanceScore(nodes: Point[], targetDistKm: number): number {
-    const line = turf.lineString(nodes.map(n => [n.lng, n.lat]));
+    const validNodes = nodes.filter(n => typeof n.lat === 'number' && typeof n.lng === 'number' && !isNaN(n.lat) && !isNaN(n.lng));
+    if (validNodes.length < 2) return 0;
+    const line = turf.lineString(validNodes.map(n => [n.lng, n.lat]));
     const actualDist = turf.length(line, { units: "kilometers" });
 
     const ratio = Math.min(actualDist, targetDistKm) / Math.max(actualDist, targetDistKm);

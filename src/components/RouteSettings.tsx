@@ -10,15 +10,10 @@ interface RouteSettingsProps {
   setUnit: (u: "mi" | "km") => void;
   location: string;
   setLocation: (l: string) => void;
+  setUserLocation: (p: { lat: number; lng: number }) => void;
   surface: SurfacePreference;
   setSurface: (s: SurfacePreference) => void;
 }
-
-const FAKE_SUGGESTIONS = [
-  "Central Park West, New York, NY",
-  "Golden Gate Park, San Francisco, CA",
-  "Millennium Park, Chicago, IL",
-];
 
 export default function RouteSettings({
   distance,
@@ -27,10 +22,33 @@ export default function RouteSettings({
   setUnit,
   location,
   setLocation,
+  setUserLocation,
   surface,
   setSurface,
 }: RouteSettingsProps) {
+  const [suggestions, setSuggestions] = useState<{ label: string; lat: number; lng: number }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+
+  const searchLocation = async (query: string) => {
+    if (query.length < 3) return;
+    setIsSearching(true);
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`);
+      const data = await response.json();
+      const results = data.map((item: any) => ({
+        label: item.display_name,
+        lat: parseFloat(item.lat),
+        lng: parseFloat(item.lon)
+      }));
+      setSuggestions(results);
+      setShowSuggestions(results.length > 0);
+    } catch (error) {
+      console.error("Geocoding failed:", error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   return (
     <div className="space-y-8 pt-6 border-t border-divider">
@@ -89,27 +107,38 @@ export default function RouteSettings({
         <label className="text-[11px] font-sans font-medium uppercase tracking-[0.12em] text-text-secondary ml-1">Start Location</label>
         <div className="relative">
           <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-            <MapPin className="w-5 h-5 text-accent-primary" />
+            {isSearching ? (
+              <div className="w-5 h-5 border-2 border-accent-primary border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <MapPin className="w-5 h-5 text-accent-primary" />
+            )}
           </div>
           <input
             type="text"
             value={location}
             onChange={(e) => {
               setLocation(e.target.value);
-              setShowSuggestions(e.target.value.length > 0);
+              if (e.target.value.length >= 3) {
+                const timer = setTimeout(() => searchLocation(e.target.value), 500);
+                return () => clearTimeout(timer);
+              } else {
+                setSuggestions([]);
+                setShowSuggestions(false);
+              }
             }}
-            onFocus={() => setShowSuggestions(location.length > 0)}
+            onFocus={() => setShowSuggestions(suggestions.length > 0)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             placeholder="Starting point..."
             className="w-full h-[56px] bg-bg-card border border-divider rounded-[10px] pl-12 pr-4 text-[15px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
           />
           {showSuggestions && (
-            <div className="absolute z-50 w-full mt-2 bg-bg-card border border-divider rounded-[16px] shadow-2xl overflow-hidden backdrop-blur-xl">
-              {FAKE_SUGGESTIONS.map((s) => (
+            <div className="absolute z-50 w-full mt-2 bg-bg-card border border-divider rounded-[16px] shadow-2xl overflow-hidden backdrop-blur-xl max-h-[300px] overflow-y-auto">
+              {suggestions.map((s, i) => (
                 <button
-                  key={s}
+                  key={i}
                   onClick={() => {
-                    setLocation(s);
+                    setLocation(s.label);
+                    setUserLocation({ lat: s.lat, lng: s.lng });
                     setShowSuggestions(false);
                   }}
                   className="w-full px-4 py-4 text-left hover:bg-bg-subtle transition-colors border-b border-divider last:border-none group"
@@ -119,8 +148,8 @@ export default function RouteSettings({
                       <MapPin className="w-4 h-4 text-text-muted group-hover:text-accent-primary transition-colors" />
                     </div>
                     <div>
-                      <div className="text-[14px] font-sans text-white">{s.split(',')[0]}</div>
-                      <div className="text-[12px] font-sans text-text-secondary">{s.split(',').slice(1).join(',').trim()}</div>
+                      <div className="text-[14px] font-sans text-white line-clamp-1">{s.label.split(',')[0]}</div>
+                      <div className="text-[12px] font-sans text-text-secondary line-clamp-2">{s.label.split(',').slice(1).join(',').trim()}</div>
                     </div>
                   </div>
                 </button>

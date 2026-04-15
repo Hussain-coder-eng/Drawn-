@@ -22,8 +22,6 @@ export const SHAPES = [
   { id: "arrow", label: "Arrow", icon: ArrowRight },
   { id: "lightning", label: "Lightning", icon: Zap },
   { id: "circle", label: "Circle", icon: Smile },
-  { id: "letter", label: "Letter", icon: Type },
-  { id: "custom", label: "Custom+", icon: Plus },
 ];
 
 export const FONT_STYLES = [

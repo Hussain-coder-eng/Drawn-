@@ -19,10 +19,12 @@ export const SHAPE_SIMPLIFICATION_CONFIG: Record<string, { epsilon: number, targ
   lightning: { epsilon: 0.02, targetSegments: 6,  minSegments: 4  },
   spiral:    { epsilon: 0.06, targetSegments: 12, minSegments: 8  },
   // Text letters
+  text:         { epsilon: 0.04, targetSegments: 12, minSegments: 6  },
   letterSimple: { epsilon: 0.05, targetSegments: 4, minSegments: 3 },
   letterMedium: { epsilon: 0.04, targetSegments: 6, minSegments: 4 },
   letterComplex:{ epsilon: 0.03, targetSegments: 8, minSegments: 6 },
   // Custom drawing
+  draw:      { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
   drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
 };
 
@@ -140,15 +142,17 @@ export function generateNormalizedHeart(numPoints = 60): NormalizedPoint[] {
   return normalizePoints(points);
 }
 
-export function generateNormalizedStar(numPoints = 50, innerRadius = 0.4): NormalizedPoint[] {
+export function generateNormalizedStar(innerRadius = 0.4): NormalizedPoint[] {
   const points: NormalizedPoint[] = [];
+  const numPoints = 10;
   for (let i = 0; i < numPoints; i++) {
-    const t = (i / (numPoints - 1)) * Math.PI * 2;
+    const t = (i / numPoints) * Math.PI * 2;
     const r = i % 2 === 0 ? 1 : innerRadius;
     const x = Math.cos(t - Math.PI / 2) * r;
     const y = Math.sin(t - Math.PI / 2) * r;
     points.push({ x, y });
   }
+  points.push({ ...points[0] }); // Close the shape
   return normalizePoints(points);
 }
 
@@ -228,10 +232,16 @@ function normalizePoints(points: NormalizedPoint[]): NormalizedPoint[] {
 }
 
 export function scaleAndCenter(points: Point[], center: Point, targetDistanceKm: number): Point[] {
-  if (points.length === 0) return [];
+  // Filter out any invalid points
+  const validPoints = points.filter(p => 
+    typeof p.lat === 'number' && typeof p.lng === 'number' && 
+    !isNaN(p.lat) && !isNaN(p.lng)
+  );
+
+  if (validPoints.length < 2) return [];
   
   // Create turf lineString to calculate current length
-  const line = turf.lineString(points.map(p => [p.lng, p.lat]));
+  const line = turf.lineString(validPoints.map(p => [p.lng, p.lat]));
   const currentLength = turf.length(line, { units: "kilometers" });
   
   // Scale factor
@@ -280,10 +290,4 @@ export function generateSquare(center: Point, distanceKm: number): Point[] {
     { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0, y: 0 }
   ];
   return scaleAndCenter(points.map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
-}
-
-export function generateText(text: string, center: Point, distanceKm: number): Point[] {
-  // This is now handled by composeWordPath in gpsFont.ts
-  // But we'll keep a stub for compatibility in App.tsx preview
-  return [];
 }

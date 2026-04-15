@@ -4,6 +4,8 @@ import { Point } from "../lib/shapeMath";
 import { OSMNode } from "./overpassService";
 import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness } from "./fitnessService";
+import { RateLimiter } from "./rateLimiter";
+import { measureLatency } from "../lib/latency";
 
 const SYSTEM_PROMPT = `
 You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
@@ -35,6 +37,14 @@ export interface GeminiStagedResult {
 }
 
 export class GeminiService {
+  private rateLimiter: RateLimiter;
+  private cache: Map<string, GeminiStagedResult> = new Map();
+
+  constructor() {
+    // Limit to 5 requests per minute to stay well within free tier limits
+    this.rateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 60000 });
+  }
+
   private getAI(): GoogleGenAI {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -57,10 +67,12 @@ export class GeminiService {
                             errorStr.includes("RESOURCE_EXHAUSTED");
         
         const isQuotaExceeded = errorStr.includes("exceeded your current quota") || 
-                                error.message?.includes("quota");
+                                error.message?.includes("quota") ||
+                                error.message?.includes("RESOURCE_EXHAUSTED");
 
         if (isQuotaExceeded) {
-          throw new Error("Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. Please try again tomorrow or check your API plan.");
+          const quotaMsg = "Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. You can try again tomorrow, or use the 'Fine-tune' feature to manually adjust your route if you have a partial result.";
+          throw new Error(quotaMsg);
         }
 
         if (isRateLimit && attempt < maxRetries) {
@@ -87,7 +99,21 @@ export class GeminiService {
       throw new Error("Invalid shape script provided to AI.");
     }
     const ai = this.getAI();
-    const model = "gemini-3.1-pro-preview";
+    const model = "gemini-3-flash-preview";
+
+    // 0. Check Cache
+    const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
+    if (this.cache.has(cacheKey)) {
+      console.log("[DEBUG] Returning cached Gemini result");
+      return this.cache.get(cacheKey)!;
+    }
+
+    // 1. Rate Limit Check
+    try {
+      await this.rateLimiter.check();
+    } catch (e: any) {
+      throw new Error(`AI is busy: ${e.message}`);
+    }
 
     onProgress?.("AI is analyzing the road network...");
 
@@ -129,37 +155,43 @@ Follow the compass bearing for each stage using whatever roads are available.
 
     let response;
     try {
-      response = await this.callWithRetry(() => ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          responseMimeType: "application/json",
-          maxOutputTokens: 4096,
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              startNodeId: { type: Type.STRING },
-              stages: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    stageNumber: { type: Type.INTEGER },
-                    nodeIds: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING }
-                    }
-                  },
-                  required: ["stageNumber", "nodeIds"]
+      const { data: res } = await measureLatency("Gemini:GenerateContent", async () => {
+        return await this.callWithRetry(() => ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            responseMimeType: "application/json",
+            maxOutputTokens: 4096,
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                startNodeId: { type: Type.STRING },
+                stages: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      stageNumber: { type: Type.INTEGER },
+                      nodeIds: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING }
+                      }
+                    },
+                    required: ["stageNumber", "nodeIds"]
+                  }
                 }
-              }
-            },
-            required: ["startNodeId", "stages"]
+              },
+              required: ["startNodeId", "stages"]
+            }
           }
-        }
-      }));
+        }));
+      }, { silent: true });
+      response = res;
     } catch (apiError: any) {
+      if (apiError.message.includes("Quota Exceeded")) {
+        throw apiError;
+      }
       console.error("[DEBUG] Gemini API Call Failed:", apiError);
       throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
     }
@@ -177,13 +209,19 @@ Follow the compass bearing for each stage using whatever roads are available.
       this.validateRawResult(result);
 
       // Map indices back to real OSM IDs
-      return {
+      const finalResult = {
         startNodeId: indexToId.get(String(result.startNodeId)) || startNodeId,
         stages: result.stages.map((s: any) => ({
           stageNumber: s.stageNumber,
           nodeIds: (s.nodeIds || []).map((idx: any) => indexToId.get(String(idx))).filter(Boolean)
         }))
       };
+
+      // Cache result
+      const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
+      this.cache.set(cacheKey, finalResult);
+
+      return finalResult;
     } catch (e: any) {
       if (e.message.startsWith("AI returned")) throw e;
       console.error("[DEBUG] Failed to parse Gemini response:", text, e);
@@ -201,7 +239,14 @@ Follow the compass bearing for each stage using whatever roads are available.
     onProgress?: (msg: string) => void
   ): Promise<GeminiStagedResult> {
     const ai = this.getAI();
-    const model = "gemini-3.1-pro-preview";
+    const model = "gemini-3-flash-preview";
+
+    // Rate Limit Check
+    try {
+      await this.rateLimiter.check();
+    } catch (e: any) {
+      throw new Error(`AI is busy: ${e.message}`);
+    }
 
     onProgress?.("AI is refining the route...");
 
@@ -283,6 +328,9 @@ Each stage MUST have "stageNumber" and "nodeIds".
         }
       }));
     } catch (apiError: any) {
+      if (apiError.message.includes("Quota Exceeded")) {
+        throw apiError;
+      }
       console.error("[DEBUG] Gemini Reroute API Call Failed:", apiError);
       throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
     }

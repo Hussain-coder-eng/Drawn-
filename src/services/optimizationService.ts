@@ -15,6 +15,11 @@ export function calculateGeodesicBearing(pointA: Point, pointB: Point): number {
 }
 
 export function closestPointOnSegment(point: Point, segStart: Point, segEnd: Point): Point {
+  if (typeof point.lat !== 'number' || typeof point.lng !== 'number' || isNaN(point.lat) || isNaN(point.lng) ||
+      typeof segStart.lat !== 'number' || typeof segStart.lng !== 'number' || isNaN(segStart.lat) || isNaN(segStart.lng) ||
+      typeof segEnd.lat !== 'number' || typeof segEnd.lng !== 'number' || isNaN(segEnd.lat) || isNaN(segEnd.lng)) {
+    return point;
+  }
   const p = turf.point([point.lng, point.lat]);
   const line = turf.lineString([[segStart.lng, segStart.lat], [segEnd.lng, segEnd.lat]]);
   const snapped = turf.nearestPointOnLine(line, p);
@@ -37,11 +42,13 @@ export function scoreShapeAgainstRoadNetwork(
       start,
       end,
       bearing: calculateGeodesicBearing(start, end),
-      lengthM: turf.distance(
-        turf.point([start.lng, start.lat]),
-        turf.point([end.lng, end.lat]),
-        { units: 'meters' }
-      )
+      lengthM: (typeof start.lat === 'number' && typeof start.lng === 'number' && typeof end.lat === 'number' && typeof end.lng === 'number' && !isNaN(start.lat) && !isNaN(start.lng) && !isNaN(end.lat) && !isNaN(end.lng)) 
+        ? turf.distance(
+            turf.point([start.lng, start.lat]),
+            turf.point([end.lng, end.lat]),
+            { units: 'meters' }
+          )
+        : 0
     });
   }
 
