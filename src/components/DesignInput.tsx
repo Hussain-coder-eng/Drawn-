@@ -122,7 +122,8 @@ export default function DesignInput({
                   data-testid="text-input"
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
-                  placeholder="Type a word or name…"
+                  maxLength={20}
+                placeholder="Type a word or name…"
                   className="w-full h-[52px] bg-bg-card border border-divider rounded-[10px] pl-12 pr-4 text-[15px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
                 />
               </div>
@@ -150,7 +151,7 @@ export default function DesignInput({
               {drawnPath.length > 0 && (
                 <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto">
                   <Check className="w-3 h-3 text-success" />
-                  <span className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Captured</span>
+                  <span data-point-count={drawnPath.length} className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Captured</span>
                 </div>
               )}
             </div>
