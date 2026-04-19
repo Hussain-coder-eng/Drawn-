@@ -111,7 +111,7 @@ export class GeminiService {
       msg.includes("network error") ||
       name === "networkerror" ||
       msg.includes("err_network") ||
-      msg.includes("load failed") // Safari's equivalent of "Failed to fetch"
+      msg.includes("load failed") // Safari's equivalent of "Failed to fetch"; also fires on CORS errors — accepted as safe false-positive for this endpoint
     );
   }
 
@@ -511,6 +511,8 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
             maxOutputTokens: 8192,
+            // Disable thinking: same rationale as selectNodesStaged — rerouting
+            // is a constrained lookup task, not a reasoning task.
             thinkingConfig: { thinkingBudget: 0 },
             abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
             responseSchema: {
