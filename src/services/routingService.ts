@@ -237,7 +237,7 @@ export class RoutingService {
     try {
       results = await Promise.all(chunks.map(async (chunk) => {
         const coordStr = chunk.map((p: Point) => `${p.lng},${p.lat}`).join(";");
-        const data = await this.fetchOSRM(`/route/v1/foot/${coordStr}?overview=full&geometries=geojson`);
+        const data = await this.fetchOSRM(`/route/v1/driving/${coordStr}?overview=full&geometries=geojson`);
 
         if (data && data.code === "Ok" && data.routes.length > 0) {
           return data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[0], c[1]] as [number, number]);
@@ -348,8 +348,11 @@ export class RoutingService {
   // 3c - Fallback to OpenRouteService
   async routeORS(points: Point[]): Promise<Point[]> {
     if (!this.orsApiKey) throw new Error("OpenRouteService API key missing. Please check your .env file.");
-    
-    const url = `${ORS_BASE_URL}/directions/driving-car/geojson`;
+
+    // Pass the key as a query parameter instead of an Authorization header.
+    // The Authorization header triggers a CORS preflight that ORS rejects in browser contexts,
+    // resulting in "Failed to fetch". Query-param auth skips the preflight entirely.
+    const url = `${ORS_BASE_URL}/directions/driving-car/geojson?api_key=${encodeURIComponent(this.orsApiKey)}`;
     let lastError: any = null;
     let attempt = 0;
     const maxRetries = 3;
@@ -360,7 +363,6 @@ export class RoutingService {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": this.orsApiKey
           },
           body: JSON.stringify({
             coordinates: points.map(p => [p.lng, p.lat])
