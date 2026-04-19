@@ -1,0 +1,47 @@
+# Ignore absolutely everything by default
+/*
+
+# Un-ignore ONLY the folders you are actually working in
+!/src/
+!/public/
+
+# Un-ignore the core configuration files
+!package.json
+!package-lock.json
+!README.md
+!.gitignore# Ignore everything first
+/*
+
+# Allow the core project structure
+!/src/
+!/public/
+!package.json
+!README.md
+
+# Still ignore heavy subfolders inside src if they exist
+node_modules/
+dist/
+build/
+.git/
+# Ignore everything first
+/*
+
+# Allow the core project structure
+!/src/
+!/public/
+!package.json
+!README.md
+
+# Still ignore heavy subfolders inside src if they exist
+node_modules/
+dist/
+build/
+.git/node_modules/
+.git/
+dist/
+build/
+.next/
+vendor/
+*.log
+*.lock
+package-lock.json

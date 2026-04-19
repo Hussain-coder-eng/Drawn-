@@ -1,0 +1,5 @@
+{
+  "name": "Drawn",
+  "description": "Drawn to run. Design GPS art routes for your next run. Draw shapes, type text, or pick from presets and snap them to real streets.",
+  "requestFramePermissions": ["geolocation"]
+}

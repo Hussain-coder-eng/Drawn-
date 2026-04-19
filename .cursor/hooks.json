@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "node .cursor/hooks/shell-network-guard.mjs",
+        "matcher": "curl|wget|(^|\\s)nc(\\s|$)"
+      }
+    ]
+  }
+}

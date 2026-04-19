@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drawn — Improvement Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f0f13;
+      --surface: #18181f;
+      --surface2: #1e1e28;
+      --border: #2a2a38;
+      --accent: #7c6af7;
+      --accent2: #e879f9;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --text: #e4e4f0;
+      --muted: #6b6b8a;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    /* ── Header ── */
+    header {
+      max-width: 1100px;
+      margin: 0 auto 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+    h1 span { color: var(--muted); font-weight: 400; }
+
+    .date-badge {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ── Stats row ── */
+    .stats-row {
+      max-width: 1100px;
+      margin: 0 auto 32px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 700px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+
+    .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+    .stat-value { font-size: 32px; font-weight: 800; letter-spacing: -1px; }
+    .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* ── Section ── */
+    .section {
+      max-width: 1100px;
+      margin: 0 auto 40px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
+
+    .section-line {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── Task cards (big 4) ── */
+    .task-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 700px) { .task-grid { grid-template-columns: 1fr; } }
+
+    .task-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .task-card.active { border-color: var(--accent); }
+    .task-card.done { border-color: var(--green); }
+
+    .task-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--border);
+    }
+
+    .task-card.active::before { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+    .task-card.done::before   { background: var(--green); }
+
+    .task-num {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .task-name {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      letter-spacing: -0.2px;
+    }
+
+    .task-desc {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    /* progress bar */
+    .progress-wrap {
+      margin-bottom: 14px;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: var(--accent);
+      transition: width 0.5s ease;
+    }
+
+    .task-card.done .progress-fill { background: var(--green); }
+
+    /* agent pill */
+    .agent-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .agent-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .agent-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot-active   { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: pulse 1.5s infinite; }
+    .dot-pending  { background: var(--muted); }
+    .dot-done     { background: var(--green); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    .status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-active  { background: rgba(124,106,247,0.15); color: var(--accent); border: 1px solid rgba(124,106,247,0.3); }
+    .badge-pending { background: rgba(107,107,138,0.12); color: var(--muted);  border: 1px solid var(--border); }
+    .badge-done    { background: rgba(52,211,153,0.12);  color: var(--green);  border: 1px solid rgba(52,211,153,0.3); }
+
+    /* ── Subtask table ── */
+    .subtask-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .subtask-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: 32px 1fr auto auto;
+      align-items: center;
+      gap: 12px;
+      transition: border-color 0.15s;
+    }
+
+    .subtask-row.active  { border-color: var(--accent); }
+    .subtask-row.done    { border-color: rgba(52,211,153,0.3); opacity: 0.75; }
+    .subtask-row.pending { opacity: 0.6; }
+
+    .subtask-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    .subtask-row.active .subtask-num { background: rgba(124,106,247,0.2); color: var(--accent); }
+    .subtask-row.done   .subtask-num { background: rgba(52,211,153,0.15); color: var(--green); }
+
+    .subtask-name { font-size: 14px; font-weight: 500; }
+    .subtask-files { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .subtask-agent { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+    /* check icon */
+    .check {
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .check-done    { background: rgba(52,211,153,0.2); color: var(--green); font-size: 11px; }
+    .check-active  { background: rgba(124,106,247,0.2); color: var(--accent); font-size: 9px; }
+    .check-pending { background: var(--surface2); color: var(--muted); font-size: 11px; }
+
+    /* ── Footer ── */
+    footer {
+      max-width: 1100px;
+      margin: 40px auto 0;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">✦</div>
+    <div>
+      <h1>Drawn <span>/ Improvement Dashboard</span></h1>
+    </div>
+  </div>
+  <div class="date-badge">Session: 2026-04-16</div>
+</header>
+
+<!-- ── Stats ── -->
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">Improvement Tasks</div>
+    <div class="stat-value" style="color: var(--accent)">4</div>
+    <div class="stat-sub">Planned this session</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Completed</div>
+    <div class="stat-value" style="color: var(--green)">1</div>
+    <div class="stat-sub">Task 1 — E2E Testing ✓</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Sub-tasks</div>
+    <div class="stat-value" style="color: var(--blue)">12</div>
+    <div class="stat-sub">E2E plan tasks</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Test Coverage Goal</div>
+    <div class="stat-value" style="color: var(--green)">12</div>
+    <div class="stat-sub">E2E + unit tests</div>
+  </div>
+</div>
+
+<!-- ── Big 4 Tasks ── -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-title">Improvement Tasks</div>
+    <div class="section-line"></div>
+  </div>
+
+  <div class="task-grid">
+
+    <!-- Task 1: E2E Testing — DONE -->
+    <div class="task-card done">
+      <div class="task-num">Task 01</div>
+      <div class="task-name">E2E API Testing</div>
+      <div class="task-desc">
+        Playwright E2E suite + Vitest unit tests for all three input modes
+        (shapes, text, freehand drawing) against real Overpass and Gemini APIs.
+        Pass criteria: route renders, fitness ≥ 50, distance ±30%.
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-meta">
+          <span>Progress</span>
+          <span id="t1-pct">0 / 12 sub-tasks</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="t1-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="agent-row">
+        <span class="status-badge badge-done">Complete</span>
+        <div class="agent-pill">
+          <div class="agent-dot dot-done"></div>
+          5 Implementers
+        </div>
+        <div class="agent-pill">
+          <div class="agent-dot dot-done"></div>
+          4 Spec Reviewers
+        </div>
+        <div class="agent-pill">
+          <div class="agent-dot dot-done"></div>
+          27 unit tests ✓
+        </div>
+        <div class="agent-pill">
+          <div class="agent-dot dot-done"></div>
+          12 E2E tests listed ✓
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 2: Latency — PENDING -->
+    <div class="task-card">
+      <div class="task-num">Task 02</div>
+      <div class="task-name">Latency Reduction</div>
+      <div class="task-desc">
+        Reduce route generation time from ~2–3 minutes to ≈15 seconds.
+        Profile the pipeline, parallelize Overpass + Gemini where possible,
+        cache aggressively.
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-meta">
+          <span>Progress</span>
+          <span>Not started</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="agent-row">
+        <span class="status-badge badge-pending">Pending</span>
+        <div class="agent-pill">
+          <div class="agent-dot dot-pending"></div>
+          Awaiting Task 1
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 3: Route Accuracy — PENDING -->
+    <div class="task-card">
+      <div class="task-num">Task 03</div>
+      <div class="task-name">Route Accuracy</div>
+      <div class="task-desc">
+        Improve how faithfully generated routes match the target shape.
+        Better anchor selection, smarter Gemini prompting, improved
+        fitness-driven rerouting.
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-meta">
+          <span>Progress</span>
+          <span>Not started</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="agent-row">
+        <span class="status-badge badge-pending">Pending</span>
+        <div class="agent-pill">
+          <div class="agent-dot dot-pending"></div>
+          Awaiting Task 2
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 4: UI Redesign — PENDING -->
+    <div class="task-card">
+      <div class="task-num">Task 04</div>
+      <div class="task-name">UI Redesign</div>
+      <div class="task-desc">
+        Redesign the app UI for clarity and usability — better onboarding,
+        cleaner controls, improved mobile layout, progress feedback during
+        long generation runs.
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-meta">
+          <span>Progress</span>
+          <span>Not started</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <div class="agent-row">
+        <span class="status-badge badge-pending">Pending</span>
+        <div class="agent-pill">
+          <div class="agent-dot dot-pending"></div>
+          Awaiting Task 3
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Sub-task breakdown (Task 1) ── -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-title">Task 1 — Sub-tasks</div>
+    <div class="section-line"></div>
+  </div>
+
+  <div class="subtask-list">
+
+    <div class="subtask-row" id="st1" data-status="done">
+      <div class="subtask-num">1</div>
+      <div>
+        <div class="subtask-name">Install Playwright + npm scripts</div>
+        <div class="subtask-files">package.json</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st2" data-status="done">
+      <div class="subtask-num">2</div>
+      <div>
+        <div class="subtask-name">Create playwright.config.ts + update vite.config.ts</div>
+        <div class="subtask-files">playwright.config.ts · vite.config.ts</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st3" data-status="done">
+      <div class="subtask-num">3</div>
+      <div>
+        <div class="subtask-name">Add data-testid attributes to UI components</div>
+        <div class="subtask-files">DrawingCanvas · DesignInput · RouteSettings · App.tsx · MapComponent · ResultCard</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st4" data-status="done">
+      <div class="subtask-num">4</div>
+      <div>
+        <div class="subtask-name">Create drawing coordinate fixtures</div>
+        <div class="subtask-files">tests/e2e/fixtures/drawing-{loop,letter,polygon,complex}.json</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st5" data-status="done">
+      <div class="subtask-num">5</div>
+      <div>
+        <div class="subtask-name">Create drawPath canvas helper</div>
+        <div class="subtask-files">tests/e2e/helpers/draw.ts</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st6" data-status="done">
+      <div class="subtask-num">6</div>
+      <div>
+        <div class="subtask-name">Vitest unit tests — shapeMath.test.ts</div>
+        <div class="subtask-files">tests/unit/shapeMath.test.ts</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st7" data-status="done">
+      <div class="subtask-num">7</div>
+      <div>
+        <div class="subtask-name">Vitest unit tests — optimizationService.test.ts</div>
+        <div class="subtask-files">tests/unit/optimizationService.test.ts</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st8" data-status="done">
+      <div class="subtask-num">8</div>
+      <div>
+        <div class="subtask-name">Vitest unit tests — fitnessService.test.ts</div>
+        <div class="subtask-files">tests/unit/fitnessService.test.ts</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st9" data-status="done">
+      <div class="subtask-num">9</div>
+      <div>
+        <div class="subtask-name">Playwright E2E — shapes.spec.ts</div>
+        <div class="subtask-files">tests/e2e/shapes.spec.ts (4 tests: circle, star, heart, arrow)</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st10" data-status="done">
+      <div class="subtask-num">10</div>
+      <div>
+        <div class="subtask-name">Playwright E2E — text.spec.ts</div>
+        <div class="subtask-files">tests/e2e/text.spec.ts (4 tests: A, RUN, LONDON, HELLO WORLD)</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st11" data-status="done">
+      <div class="subtask-num">11</div>
+      <div>
+        <div class="subtask-name">Playwright E2E — drawing.spec.ts</div>
+        <div class="subtask-files">tests/e2e/drawing.spec.ts (4 tests: loop, letter, polygon, complex)</div>
+      </div>
+      <div class="subtask-agent">Implementer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+    <div class="subtask-row" id="st12" data-status="done">
+      <div class="subtask-num">12</div>
+      <div>
+        <div class="subtask-name">Run full test suite — verify all pass</div>
+        <div class="subtask-files">npm test · npx playwright test --list</div>
+      </div>
+      <div class="subtask-agent">Spec Reviewer + Quality Reviewer</div>
+      <div class="check check-pending">○</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Legend ── -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-title">Agent Roles</div>
+    <div class="section-line"></div>
+  </div>
+  <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+    <div class="agent-pill"><div class="agent-dot dot-active"></div> Implementer — writes code, runs tests, self-reviews</div>
+    <div class="agent-pill"><div class="agent-dot" style="background: var(--yellow)"></div> Spec Reviewer — checks code matches the spec exactly</div>
+    <div class="agent-pill"><div class="agent-dot" style="background: var(--blue)"></div> Quality Reviewer — checks code quality and best practices</div>
+    <div class="agent-pill"><div class="agent-dot dot-pending"></div> Pending — not yet dispatched</div>
+    <div class="agent-pill"><div class="agent-dot dot-done"></div> Done — task complete and approved</div>
+  </div>
+</div>
+
+<footer>
+  <span>Drawn GPS Art — Improvement Session 2026-04-16</span>
+  <span>Update this file to reflect progress as each sub-task completes.</span>
+</footer>
+
+<!-- Simple JS to update progress when sub-tasks are marked done -->
+<script>
+  // To mark a sub-task as done, change its data-status to "done"
+  // To mark as active, change to "active"
+  // Run updateAll() after any change.
+
+  function updateAll() {
+    const rows = document.querySelectorAll('.subtask-row');
+    let done = 0;
+    let hasActive = false;
+
+    rows.forEach((row) => {
+      const status = row.dataset.status || 'pending';
+      const check = row.querySelector('.check');
+      const num   = row.querySelector('.subtask-num');
+
+      row.classList.remove('active', 'done', 'pending');
+      row.classList.add(status);
+
+      if (status === 'done') {
+        done++;
+        check.className = 'check check-done';
+        check.textContent = '✓';
+        num.style.background = 'rgba(52,211,153,0.15)';
+        num.style.color = 'var(--green)';
+      } else if (status === 'active') {
+        hasActive = true;
+        check.className = 'check check-active';
+        check.textContent = '▶';
+        num.style.background = 'rgba(124,106,247,0.2)';
+        num.style.color = 'var(--accent)';
+      } else {
+        check.className = 'check check-pending';
+        check.textContent = '○';
+        num.style.background = '';
+        num.style.color = '';
+      }
+    });
+
+    const pct = Math.round((done / rows.length) * 100);
+    document.getElementById('t1-fill').style.width = pct + '%';
+    document.getElementById('t1-pct').textContent = done + ' / ' + rows.length + ' sub-tasks';
+
+    // Update stats card
+    const statActive = document.querySelector('.stat-card:nth-child(2) .stat-value');
+    if (done === rows.length) statActive.textContent = '0';
+  }
+
+  updateAll();
+</script>
+</body>
+</html>

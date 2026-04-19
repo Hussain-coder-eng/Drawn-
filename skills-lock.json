@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "skills": {
+    "Agent Development": {
+      "source": "anthropics/claude-code",
+      "sourceType": "github",
+      "computedHash": "4931c2867890bfef5881225adb691c3d719fe9ad556e3d5fae15f83e0668fa60"
+    },
+    "MCP Integration": {
+      "source": "anthropics/claude-code",
+      "sourceType": "github",
+      "computedHash": "99cfef49810cb80a39762a79dbb6a80d486ea56cfa1a81ed10cae0a5a296b496"
+    },
+    "frontend-design": {
+      "source": "anthropics/claude-code",
+      "sourceType": "github",
+      "computedHash": "e8118284a6365753790d44bb2758a6032b3af27fa84696428d9233f2be0f4e78"
+    }
+  }
+}
