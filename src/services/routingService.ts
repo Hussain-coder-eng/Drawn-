@@ -189,6 +189,16 @@ export class RoutingService {
   async routeWithLockedWaypoints(waypointArray: (Point & { isLocked?: boolean })[]) {
     const OSRM_LIMIT = 25;
 
+    // Guard: OSRM requires at least 2 waypoints. If Gemini returned mostly hallucinated
+    // node indices (all failing the indexToId lookup), the array can end up with 0 or 1
+    // entries — producing an invalid single-coordinate URL and HTTP 400 on all mirrors.
+    if (waypointArray.length < 2) {
+      throw new Error(
+        `Route generation failed: the AI selected too few valid road nodes (got ${waypointArray.length}). ` +
+        `Try generating again — a different road network snapshot usually resolves this.`
+      );
+    }
+
     function chunkWithAnchorRespect(waypoints: any[], lockedIndices: number[], limit: number) {
       const chunks = [];
       let start = 0;
@@ -206,7 +216,8 @@ export class RoutingService {
         start = end;
       }
 
-      return chunks;
+      // Drop any chunk that ends up with fewer than 2 waypoints — OSRM rejects them.
+      return chunks.filter(c => c.length >= 2);
     }
 
     const lockedIndices = waypointArray
@@ -215,30 +226,38 @@ export class RoutingService {
 
     const chunks = chunkWithAnchorRespect(waypointArray, lockedIndices, OSRM_LIMIT);
 
-    let results: [number, number][][];
-    try {
-      results = await Promise.all(chunks.map(async (chunk) => {
-        const coordStr = chunk.map(p => `${p.lng},${p.lat}`).join(";");
-        const data = await this.fetchOSRM(`/route/v1/foot/${coordStr}?overview=full&geometries=geojson`);
+    if (chunks.length === 0) {
+      throw new Error("Route generation failed: no valid waypoint segments to route. Try generating again.");
+    }
 
-        if (data && data.code === "Ok" && data.routes.length > 0) {
-          return data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[0], c[1]] as [number, number]);
-        }
-        throw new Error(`OSRM routing failed for chunk: ${data?.code ?? 'all mirrors unavailable'}`);
-      }));
-    } catch (osrmErr) {
-      // All OSRM foot-profile mirrors failed — fall back to ORS (driving profile is close enough
-      // for GPS art route display; the visual shape is what matters, not road type).
-      if (this.orsApiKey && this.orsApiKey.length > 10) {
-        console.warn("[RoutingService] OSRM foot routing failed, falling back to ORS:", osrmErr);
-        const flatPoints = waypointArray.map(p => ({ lat: p.lat, lng: p.lng }));
-        const orsPoints = await this.routeORS(flatPoints);
-        const polylineCoords: [number, number][] = orsPoints.map(p => [p.lng, p.lat]);
-        const validCoords = polylineCoords.filter(c => !isNaN(c[0]) && !isNaN(c[1]));
-        if (validCoords.length < 2) throw new Error("ORS fallback returned insufficient coordinates.");
-        return { polylineCoords: validCoords, anchorVerification: [] };
+    // Route chunks sequentially (not parallel) to avoid hitting OSRM public server rate limits.
+    const results: [number, number][][] = [];
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk = chunks[ci];
+      const coordStr = chunk.map((p: Point) => `${p.lng},${p.lat}`).join(";");
+      const data = await this.fetchOSRM(`/route/v1/foot/${coordStr}?overview=full&geometries=geojson`);
+
+      if (data && data.code === "Ok" && data.routes.length > 0) {
+        results.push(data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[0], c[1]] as [number, number]));
+        continue;
       }
-      throw new Error("Routing servers are currently unreachable. Please check your connection or try again.");
+
+      // OSRM chunk failed — try ORS as fallback if key is present
+      const osrmCode = data?.code ?? 'all mirrors unavailable';
+      console.warn(`[RoutingService] OSRM chunk ${ci + 1}/${chunks.length} failed (${osrmCode}), attempting fallback`);
+
+      if (this.orsApiKey && this.orsApiKey.length > 10) {
+        console.warn("[RoutingService] Falling back to ORS for this chunk");
+        const chunkPoints = chunk.map((p: Point) => ({ lat: p.lat, lng: p.lng }));
+        const orsPoints = await this.routeORS(chunkPoints);
+        results.push(orsPoints.map(p => [p.lng, p.lat] as [number, number]));
+        continue;
+      }
+
+      throw new Error(
+        `Routing failed (OSRM: ${osrmCode}). The public routing server rejected the request. ` +
+        `Please try generating again — if this persists, the road network may be too sparse for this shape.`
+      );
     }
 
     const allCoords: [number, number][] = [];
