@@ -99,6 +99,22 @@ export class GeminiService {
     return new GoogleGenAI({ apiKey });
   }
 
+  private static isNetworkError(err: unknown): boolean {
+    if (err == null || typeof err !== "object") return false;
+    const e = err as { name?: string; message?: string };
+    const name = (e.name ?? "").toLowerCase();
+    const msg = (e.message ?? "").toLowerCase();
+    // Covers: TypeError: Failed to fetch, NetworkError, ERR_NETWORK, etc.
+    return (
+      msg.includes("failed to fetch") ||
+      msg.includes("networkerror") ||
+      msg.includes("network error") ||
+      name === "networkerror" ||
+      msg.includes("err_network") ||
+      msg.includes("load failed") // Safari's equivalent of "Failed to fetch"; also fires on CORS errors — accepted as safe false-positive for this endpoint
+    );
+  }
+
   private async callWithRetry(
     fn: () => Promise<any>,
     maxRetries = 3,
@@ -117,6 +133,7 @@ export class GeminiService {
           attempt,
           maxRetries,
           isAbortLike: GeminiService.isAbortLikeError(error),
+          isNetworkError: GeminiService.isNetworkError(error),
           errorName: error?.name,
           errorMessage: error?.message,
         });
@@ -136,18 +153,23 @@ export class GeminiService {
                               error.message?.includes("503") ||
                               error.message?.includes("high demand");
 
+        const isNetworkBlip = GeminiService.isNetworkError(error);
+
         if (isQuotaExceeded) {
           const quotaMsg = "Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. You can try again tomorrow, or use the 'Fine-tune' feature to manually adjust your route if you have a partial result.";
           throw new Error(quotaMsg);
         }
 
-        if ((isRateLimit || isUnavailable) && attempt < maxRetries) {
+        if ((isRateLimit || isUnavailable || isNetworkBlip) && attempt < maxRetries) {
           // Exponential backoff: 0.5s, 1s, 2s...
           const delay = Math.pow(2, attempt) * 500 + Math.random() * 500;
           const delaySec = Math.round(delay / 1000);
           if (isUnavailable) {
             console.warn(`[DEBUG] Gemini Unavailable (503). Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
             onProgress?.(`Gemini is busy — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
+          } else if (isNetworkBlip) {
+            console.warn(`[DEBUG] Gemini network error. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
+            onProgress?.(`Connection issue — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
           } else {
             console.warn(`[DEBUG] Gemini Rate Limit hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
             onProgress?.(`AI rate limit reached — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
@@ -302,7 +324,11 @@ Preferred start node ID: ${aiStartNodeIndex}
           config: {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
-            maxOutputTokens: 4096,
+            maxOutputTokens: 8192,
+            // Disable thinking: node selection is a deterministic lookup task,
+            // not a reasoning task. Thinking adds latency and token cost with
+            // no quality benefit for structured JSON output.
+            thinkingConfig: { thinkingBudget: 0 },
             abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
             responseSchema: {
               type: Type.OBJECT,
@@ -484,7 +510,10 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
           config: {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
-            maxOutputTokens: 4096,
+            maxOutputTokens: 8192,
+            // Disable thinking: same rationale as selectNodesStaged — rerouting
+            // is a constrained lookup task, not a reasoning task.
+            thinkingConfig: { thinkingBudget: 0 },
             abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
             responseSchema: {
               type: Type.OBJECT,
