@@ -10,6 +10,8 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
   const [isDrawing, setIsDrawing] = useState(false);
   const [points, setPoints] = useState<{ x: number; y: number; t: number }[]>([]);
   const [ctx, setCtx] = useState<CanvasRenderingContext2D | null>(null);
+  // Accumulates all completed strokes for the current drawing session
+  const allStrokesRef = useRef<NormalizedPoint[][]>([]);
 
   useEffect(() => {
     if (canvasRef.current) {
@@ -47,8 +49,9 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
   const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
     setIsDrawing(true);
     const { x, y } = getCoordinates(e);
+    // Reset current-stroke points only (does NOT clear allStrokesRef)
     setPoints([{ x, y, t: Date.now() }]);
-    
+
     if (ctx) {
       const canvas = canvasRef.current!;
       ctx.beginPath();
@@ -71,7 +74,10 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
     setIsDrawing(false);
     if (points.length > 10) {
       const cleaned = cleanPoints(points);
-      onShapeComplete(cleaned);
+      // Accumulate this stroke alongside all previous ones
+      allStrokesRef.current = [...allStrokesRef.current, cleaned];
+      // Emit the full connected path (all strokes concatenated, same pattern as words/letters)
+      onShapeComplete(allStrokesRef.current.flat());
     }
   };
 
@@ -88,7 +94,6 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
 
     // 3. Gaussian smoothing (simple moving average)
     const smoothed: NormalizedPoint[] = [];
-    const windowSize = 5;
     for (let i = 0; i < processed.length; i++) {
       let sumX = 0, sumY = 0, count = 0;
       for (let j = Math.max(0, i - 2); j <= Math.min(processed.length - 1, i + 2); j++) {
@@ -106,8 +111,12 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
   const clear = () => {
     if (ctx && canvasRef.current) {
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      setPoints([]);
     }
+    // Reset both current stroke and all accumulated strokes
+    allStrokesRef.current = [];
+    setPoints([]);
+    // Notify parent so it clears drawnPath (hides "Shape Captured" indicator)
+    onShapeComplete([]);
   };
 
   return (
@@ -127,7 +136,7 @@ export function DrawingCanvas({ onShapeComplete }: DrawingCanvasProps) {
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
         />
-        {points.length === 0 && (
+        {points.length === 0 && allStrokesRef.current.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-500 font-medium">
             Draw your shape here
           </div>
