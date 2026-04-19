@@ -214,15 +214,32 @@ export class RoutingService {
       .filter(i => i !== -1);
 
     const chunks = chunkWithAnchorRespect(waypointArray, lockedIndices, OSRM_LIMIT);
-    const results = await Promise.all(chunks.map(async (chunk) => {
-      const coordStr = chunk.map(p => `${p.lng},${p.lat}`).join(";");
-      const data = await this.fetchOSRM(`/route/v1/foot/${coordStr}?overview=full&geometries=geojson`);
 
-      if (data && data.code === "Ok" && data.routes.length > 0) {
-        return data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[0], c[1]]);
+    let results: [number, number][][];
+    try {
+      results = await Promise.all(chunks.map(async (chunk) => {
+        const coordStr = chunk.map(p => `${p.lng},${p.lat}`).join(";");
+        const data = await this.fetchOSRM(`/route/v1/foot/${coordStr}?overview=full&geometries=geojson`);
+
+        if (data && data.code === "Ok" && data.routes.length > 0) {
+          return data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[0], c[1]] as [number, number]);
+        }
+        throw new Error(`OSRM routing failed for chunk: ${data?.code ?? 'all mirrors unavailable'}`);
+      }));
+    } catch (osrmErr) {
+      // All OSRM foot-profile mirrors failed — fall back to ORS (driving profile is close enough
+      // for GPS art route display; the visual shape is what matters, not road type).
+      if (this.orsApiKey && this.orsApiKey.length > 10) {
+        console.warn("[RoutingService] OSRM foot routing failed, falling back to ORS:", osrmErr);
+        const flatPoints = waypointArray.map(p => ({ lat: p.lat, lng: p.lng }));
+        const orsPoints = await this.routeORS(flatPoints);
+        const polylineCoords: [number, number][] = orsPoints.map(p => [p.lng, p.lat]);
+        const validCoords = polylineCoords.filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+        if (validCoords.length < 2) throw new Error("ORS fallback returned insufficient coordinates.");
+        return { polylineCoords: validCoords, anchorVerification: [] };
       }
-      throw new Error(`OSRM routing failed for chunk: ${data?.code || 'Unknown'}`);
-    }));
+      throw new Error("Routing servers are currently unreachable. Please check your connection or try again.");
+    }
 
     const allCoords: [number, number][] = [];
     for (let i = 0; i < results.length; i++) {
