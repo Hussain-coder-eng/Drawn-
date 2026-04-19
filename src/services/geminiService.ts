@@ -279,7 +279,9 @@ export class GeminiService {
       .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
       .join(' → ');
 
-    // Build per-stage blocks
+    // Build per-stage blocks — cap at 80 nodes per stage to keep prompts fast.
+    // Nodes are sorted by proximity to the stage midpoint so the closest (most useful) ones are kept.
+    const MAX_NODES_PER_STAGE = 80;
     const stageBlocks = stageDistances.map((s, i) => {
       const pool = stageNodePools[i] || [];
       const idealSubPath = idealStagePaths[i] || [];
@@ -287,7 +289,22 @@ export class GeminiService {
       const idealSubStr = idealSubSampled
         .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
         .join(' → ');
-      const nodesStr = pool
+
+      // Trim pool to the N closest nodes to the stage midpoint
+      let trimmedPool = pool;
+      if (pool.length > MAX_NODES_PER_STAGE && idealSubPath.length > 0) {
+        const midLat = idealSubPath.reduce((s, p) => s + p.lat, 0) / idealSubPath.length;
+        const midLng = idealSubPath.reduce((s, p) => s + p.lng, 0) / idealSubPath.length;
+        trimmedPool = [...pool]
+          .sort((a, b) => {
+            const da = Math.hypot(a.lat - midLat, a.lng - midLng);
+            const db = Math.hypot(b.lat - midLat, b.lng - midLng);
+            return da - db;
+          })
+          .slice(0, MAX_NODES_PER_STAGE);
+      }
+
+      const nodesStr = trimmedPool
         .map(n => {
           const nodeIdx = idToIndex.get(n.id) || '?';
           return `${nodeIdx}: ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
@@ -315,6 +332,7 @@ Preferred start node ID: ${aiStartNodeIndex}
         promptCharLength: prompt.length,
         stageCount: script.length,
         stagePoolSizes: stageNodePools.map(p => p.length),
+        stagePoolSizesCapped: stageNodePools.map(p => Math.min(p.length, MAX_NODES_PER_STAGE)),
         timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
       });
       const { data: res } = await measureLatency("Gemini:GenerateContent", async () => {
