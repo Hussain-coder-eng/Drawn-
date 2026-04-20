@@ -34,10 +34,10 @@ Return ONLY JSON:
 
 /**
  * Client-side abort for `generateContent`.
- * Large stage prompts + JSON schema often exceed 10–20s; a short timeout produced
- * fetch aborts surfaced as "signal is aborted without reason" from the HTTP client.
+ * 25s per attempt with 1 retry keeps total worst-case under ~55s.
  */
-const GEMINI_REQUEST_TIMEOUT_MS = 120_000;
+const GEMINI_REQUEST_TIMEOUT_MS = 25_000;
+const GEMINI_TIMEOUT_MAX_RETRIES = 1;
 
 export interface GeminiStagedResult {
   startNodeId: number;
@@ -117,11 +117,12 @@ export class GeminiService {
 
   private async callWithRetry(
     fn: () => Promise<any>,
-    maxRetries = 3,
+    maxRetries = 6,
     onProgress?: (msg: string) => void,
     operationLabel?: string
   ): Promise<any> {
     let attempt = 0;
+    let timeoutAttempts = 0;
     while (attempt < maxRetries) {
       try {
         return await fn();
@@ -154,15 +155,30 @@ export class GeminiService {
                               error.message?.includes("high demand");
 
         const isNetworkBlip = GeminiService.isNetworkError(error);
+        const isTimeout = GeminiService.isAbortLikeError(error);
 
         if (isQuotaExceeded) {
           const quotaMsg = "Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. You can try again tomorrow, or use the 'Fine-tune' feature to manually adjust your route if you have a partial result.";
           throw new Error(quotaMsg);
         }
 
+        // Timeout: allow at most GEMINI_TIMEOUT_MAX_RETRIES retries with a ~5s delay.
+        // Each attempt has a 25s timeout so total worst-case stays under ~55s.
+        if (isTimeout && timeoutAttempts < GEMINI_TIMEOUT_MAX_RETRIES) {
+          timeoutAttempts++;
+          const delay = 5000 + Math.random() * 1000;
+          const delaySec = Math.round(delay / 1000);
+          console.warn(`[DEBUG] Gemini Timeout. Retrying in ${Math.round(delay)}ms... (Timeout attempt ${timeoutAttempts}/${GEMINI_TIMEOUT_MAX_RETRIES})`);
+          onProgress?.(`AI is taking longer than expected — retrying in ${delaySec}s…`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          onProgress?.("AI is analyzing the road network...");
+          continue;
+        }
+
         if ((isRateLimit || isUnavailable || isNetworkBlip) && attempt < maxRetries) {
-          // Exponential backoff: 0.5s, 1s, 2s...
-          const delay = Math.pow(2, attempt) * 500 + Math.random() * 500;
+          // For 503 server overload: longer base delay (3s), capped at 15s. For 429/network: 0.5s base.
+          const baseMs = isUnavailable ? 3000 : 500;
+          const delay = Math.min(Math.pow(2, attempt - 1) * baseMs + Math.random() * 1000, isUnavailable ? 15000 : Infinity);
           const delaySec = Math.round(delay / 1000);
           if (isUnavailable) {
             console.warn(`[DEBUG] Gemini Unavailable (503). Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
