@@ -14,11 +14,11 @@ Drawn lets you design GPS art routes — draw a shape, type a word, or pick a pr
 
 **Premade Shapes** — Pick from hearts, stars, circles, infinity loops, and more. Set your target distance and hit generate.
 
-![Main App](screenshots/02-main-app.png)
+![Main App](screenshots/05-shape-infinity.png)
 
 **Text Mode** — Type any word or name and run it. Three font styles: Stencil, Block, and Outline.
 
-![Text Mode](screenshots/06-text-mode.png)
+![Text Mode](screenshots/06-text-hi.png)
 
 **Draw Mode** — Freehand draw your own shape directly on the map, then snap it to streets.
 
