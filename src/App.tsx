@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Wand2, LogOut, User as UserIcon } from "lucide-react";
+import { Wand2, LogOut, User as UserIcon, AlertCircle, X } from "lucide-react";
 import AuthScreen from "./components/AuthScreen";
 import BottomSheet from "./components/BottomSheet";
 import DesignInput from "./components/DesignInput";
@@ -59,6 +59,7 @@ import {
   adaptiveSimplify,
   SHAPE_SIMPLIFICATION_CONFIG,
   resamplePolylinePoints,
+  projectShapeToLatLng,
 } from "./lib/shapeMath";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
@@ -100,11 +101,9 @@ export default function App() {
     mode: "shapes",
     selectedShape: "heart",
     textInput: "",
-    fontStyle: "stencil",
     distance: 5.0,
     unit: "km",
     location: "",
-    surface: "roads",
     isGenerating: false,
     hasResult: false,
     routeFidelity: 0,
@@ -120,6 +119,7 @@ export default function App() {
   const [redoStack, setRedoStack] = useState<DrawnState[]>([]);
   const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
@@ -287,6 +287,7 @@ export default function App() {
     }
 
     setError(null);
+    setGenerationError(null);
     updateState({ isGenerating: true }, false);
     setGenerationProgress({ attempt: 0, maxAttempts: 3, fitnessScore: null, failingStages: [] });
 
@@ -449,8 +450,12 @@ export default function App() {
         );
 
         // 7. Route with Locked Waypoints
+        // Anchor the route to the user's start location: prepend and append the nearest
+        // OSM node to userLocation so the route always begins and ends where they are.
         const waypointArray = routingService.buildOSRMWaypointArray(result.stages, lockedAnchors, network.nodeMap);
-        const routingResult = await routingService.routeWithLockedWaypoints(waypointArray);
+        const startPoint = { lat: startNode.lat, lng: startNode.lng };
+        const anchoredWaypointArray = [startPoint, ...waypointArray, startPoint];
+        const routingResult = await routingService.routeWithLockedWaypoints(anchoredWaypointArray);
 
         const routedPoints = routingResult.polylineCoords.map(c => ({ lat: c[1], lng: c[0] }));
 
@@ -493,6 +498,7 @@ export default function App() {
         msg = "The routing server (OSRM) is currently unreachable or overloaded. Please try again in a few moments.";
       }
       setError(msg);
+      setGenerationError(msg);
       updateState({ isGenerating: false }, false);
     } finally {
       setLoadingMessage("");
@@ -507,11 +513,22 @@ export default function App() {
   const saveRoute = async () => {
     if (!user) return;
     try {
+      const label = state.mode === "shapes"
+        ? (SHAPES.find(s => s.id === state.selectedShape)?.label || "Shape")
+        : (validateText(state.textInput) || "Custom");
       const routeData = {
-        ...state,
         uid: user.uid,
+        label,
+        mode: state.mode,
+        selectedShape: state.selectedShape ?? null,
+        textInput: state.mode === "text" ? validateText(state.textInput) : null,
+        distance: state.distance,
+        unit: state.unit,
+        routeFidelity: state.routeFidelity ?? null,
+        snappedCoords: state.snappedCoords,
+        idealCoords: state.idealCoords,
         timestamp: Date.now(),
-        label: state.mode === "shapes" ? (SHAPES.find(s => s.id === state.selectedShape)?.label || "Shape") : (state.textInput || "Custom"),
+        // nodeMap excluded: it's a JS Map (not Firestore-serializable) and not needed for saved routes
       };
       await addDoc(collection(db, "routes"), routeData);
     } catch (error) {
@@ -533,8 +550,8 @@ export default function App() {
   };
 
   const handleExportGPX = () => {
-    const label = state.mode === "shapes" ? (SHAPES.find(s => s.id === state.selectedShape)?.label || "Shape") : (state.textInput || "Custom");
-    downloadGPX(state.snappedCoords, `Drawn - ${label}`);
+    const rawLabel = state.mode === "shapes" ? (SHAPES.find(s => s.id === state.selectedShape)?.label || "Shape") : (validateText(state.textInput) || "Custom");
+    downloadGPX(state.snappedCoords, `Drawn - ${rawLabel}`);
   };
 
   const previewIdealCoords = useMemo(() => {
@@ -553,8 +570,8 @@ export default function App() {
       }
     } else if (state.mode === "text" && validText) {
       return composeWordPath(validText, distInKm, userLocation).waypoints;
-    } else if (state.mode === "draw" && state.drawnPath.length > 0) {
-      return state.drawnPath;
+    } else if (state.mode === "draw" && state.normalizedDrawnPath.length > 0) {
+      return projectShapeToLatLng(state.normalizedDrawnPath, userLocation.lat, userLocation.lng, distInKm / 2);
     }
     return [];
   }, [state.mode, state.selectedShape, state.textInput, state.drawnPath, state.distance, state.unit, state.hasResult, state.idealCoords, userLocation]);
@@ -599,8 +616,6 @@ export default function App() {
         setSelectedShape={(id) => updateState({ selectedShape: id, hasResult: false })}
         textInput={state.textInput}
         setTextInput={(text) => updateState({ textInput: text, hasResult: false })}
-        fontStyle={state.fontStyle}
-        setFontStyle={(id) => updateState({ fontStyle: id, hasResult: false })}
         drawnPath={state.drawnPath}
         setDrawnPath={(path) => updateState({ drawnPath: path, hasResult: false })}
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
@@ -619,8 +634,6 @@ export default function App() {
         location={state.location}
         setLocation={(l) => updateState({ location: l, hasResult: false })}
         setUserLocation={(p) => setUserLocation(p)}
-        surface={state.surface}
-        setSurface={(s) => updateState({ surface: s, hasResult: false })}
       />
 
       {error && (
@@ -679,6 +692,30 @@ export default function App() {
               error={error}
               onRetry={handleGenerate}
             />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Generation Error Toast */}
+      <AnimatePresence>
+        {generationError && !state.isGenerating && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.25 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 md:left-[380px] md:translate-x-0 md:right-0 md:bottom-6 md:flex md:justify-center z-[5000] px-4 pointer-events-none"
+          >
+            <div className="flex items-start gap-3 p-4 bg-bg-card border border-danger/40 rounded-xl shadow-2xl max-w-sm w-full pointer-events-auto">
+              <AlertCircle className="w-5 h-5 text-danger flex-shrink-0 mt-0.5" />
+              <p className="text-danger text-[13px] font-medium flex-1 leading-snug">{generationError}</p>
+              <button
+                onClick={() => setGenerationError(null)}
+                className="text-text-muted hover:text-white transition-colors flex-shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
