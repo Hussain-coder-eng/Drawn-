@@ -7,30 +7,6 @@ import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness, StageScore } from "./fitnessService";
 import { auth, db } from "../firebase";
 
-const SYSTEM_PROMPT = `
-You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
-
-RULES:
-- Use ONLY provided node IDs.
-- Follow stages in strict order.
-- Each stage MUST travel in the specified compass direction.
-- PRIORITIZE "Visual Silhouette": Pick nodes that define the corners, curves, and apexes of the shape.
-- Select 4-8 Anchor Points per stage for high-fidelity tracing.
-- Final node of a stage MUST be the first node of the next stage.
-- Last node of the final stage MUST match the start node (closed loop).
-- Avoid backtracking. Every node must progress the route.
-- Every stage in the "stages" array MUST have a "nodeIds" array.
-
-Return ONLY JSON:
-{
-  "startNodeId": "1",
-  "stages": [
-    { "stageNumber": 1, "nodeIds": ["1", "2", "3"] },
-    { "stageNumber": 2, "nodeIds": ["3", "4", "5"] }
-  ]
-}
-`;
-
 export interface GeminiStagedResult {
   startNodeId: number;
   stages: { stageNumber: number; nodeIds: number[] }[];
@@ -146,8 +122,6 @@ export class GeminiService {
       console.log("[DEBUG] Returning cached Gemini result");
       return this.cache.get(cacheKey)!;
     }
-
-    onProgress?.("AI is analyzing the road network...");
 
     // Build a global index map across all stage pools (deduplicating shared nodes)
     const idToIndex = new Map<number, string>();
@@ -320,7 +294,9 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
       shapeName,
       distanceKm,
       startNodeId: previousResult.startNodeId,
-      failingStages: (fitnessResult.failingStages || []).map(s => s.stageNumber).sort(),
+      failingStages: (fitnessResult.failingStages || [])
+        .map(s => ({ stageNumber: s.stageNumber, directionScore: s.directionScore, distanceScore: s.distanceScore }))
+        .sort((a, b) => a.stageNumber - b.stageNumber),
     });
 
     onProgress?.("AI is refining the route...");

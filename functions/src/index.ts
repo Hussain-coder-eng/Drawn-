@@ -120,7 +120,7 @@ export const processGeminiJob = onDocumentCreated(
         const d = snap.data() ?? {};
         const windowStart: number = d.routeGenWindowStart ?? 0;
         let count: number = d.routeGenCount ?? 0;
-        if (now - windowStart > 60 * 60 * 1000) count = 0;
+        if (now - windowStart > 60 * 60 * 1000 || windowStart > now) count = 0;
 
         if (count >= RATE_LIMIT_PER_HOUR) {
           const waitMin = Math.ceil((60 * 60 * 1000 - (now - windowStart)) / 60_000);
@@ -172,9 +172,9 @@ export const processGeminiJob = onDocumentCreated(
       throw err;
     }
 
-    await jobRef.update({ status: "processing", updatedAt: Timestamp.now() });
-
     try {
+      await jobRef.update({ status: "processing", updatedAt: Timestamp.now() });
+
       // 3. Shared Firestore cache
       const safeCacheKey = cacheKey.replace(/[^a-zA-Z0-9_-]/g, "_");
       const cacheRef = db.collection("geminiCache").doc(safeCacheKey);

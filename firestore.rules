@@ -146,7 +146,9 @@ service cloud.firestore {
         && request.resource.data.prompt is string
         && request.resource.data.prompt.size() > 0
         && request.resource.data.prompt.size() < 50000
-        && request.resource.data.cacheKey is string;
+        && request.resource.data.cacheKey is string
+        && request.resource.data.cacheKey.size() > 0
+        && request.resource.data.cacheKey.size() <= 500;
       allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
       allow update, delete: if false;
     }
