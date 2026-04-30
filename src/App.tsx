@@ -93,7 +93,6 @@ interface SavedRoute extends DrawnState {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [guestMode, setGuestMode] = useState(false);
   const [userLocation, setUserLocation] = useState<Point>({ lat: 40.7128, lng: -74.006 });
   const [sheetExpanded, setSheetExpanded] = useState(false);
 
@@ -101,9 +100,11 @@ export default function App() {
     mode: "shapes",
     selectedShape: "heart",
     textInput: "",
+    fontStyle: "normal",
     distance: 5.0,
     unit: "km",
     location: "",
+    surface: "roads",
     isGenerating: false,
     hasResult: false,
     routeFidelity: 0,
@@ -275,8 +276,8 @@ export default function App() {
   }, []);
 
   const handleGenerate = async () => {
-    if (!user && !guestMode) {
-      setError("Please sign in or continue as guest to generate a route.");
+    if (!user) {
+      setError("Please sign in to generate a route.");
       return;
     }
 
@@ -616,6 +617,8 @@ export default function App() {
         setSelectedShape={(id) => updateState({ selectedShape: id, hasResult: false })}
         textInput={state.textInput}
         setTextInput={(text) => updateState({ textInput: text, hasResult: false })}
+        fontStyle={state.fontStyle}
+        setFontStyle={(id) => updateState({ fontStyle: id, hasResult: false })}
         drawnPath={state.drawnPath}
         setDrawnPath={(path) => updateState({ drawnPath: path, hasResult: false })}
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
@@ -634,6 +637,8 @@ export default function App() {
         location={state.location}
         setLocation={(l) => updateState({ location: l, hasResult: false })}
         setUserLocation={(p) => setUserLocation(p)}
+        surface={state.surface}
+        setSurface={(s) => updateState({ surface: s, hasResult: false })}
       />
 
       {error && (
@@ -657,10 +662,9 @@ export default function App() {
   return (
     <div className="h-screen w-screen relative overflow-hidden bg-bg-primary font-sans">
       {/* Auth Gate */}
-      {!user && !guestMode && isAuthReady && (
+      {!user && isAuthReady && (
         <AuthScreen
           onGoogleLogin={login}
-          onGuest={() => setGuestMode(true)}
           isLoggingIn={isLoggingIn}
           error={error}
         />
@@ -863,7 +867,7 @@ export default function App() {
         setError("Network error. Please check your internet connection and try again.");
         setIsLoggingIn(false);
       } else {
-        setError(`Sign-in failed (${error.code || 'unknown'}). Please try again or continue as guest.`);
+        setError(`Sign-in failed (${error.code || 'unknown'}). Please try again.`);
         setIsLoggingIn(false);
       }
     }
