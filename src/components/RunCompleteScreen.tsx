@@ -135,7 +135,7 @@ function formatElapsedTime(seconds: number) {
 }
 
 function formatPace(secPerKm: number) {
-  if (!secPerKm || isNaN(secPerKm)) return '--:--';
+  if (!secPerKm || isNaN(secPerKm) || !isFinite(secPerKm)) return '--:--';
   const m = Math.floor(secPerKm / 60);
   const s = Math.round(secPerKm % 60);
   return `${m}:${String(s).padStart(2,'0')}`;

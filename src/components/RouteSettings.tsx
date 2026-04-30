@@ -1,6 +1,5 @@
 // src/components/RouteSettings.tsx
 import { cn } from "@/src/lib/utils";
-import { SurfacePreference } from "@/src/types";
 import { MapPin, ChevronDown, ChevronUp } from "lucide-react";
 import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
@@ -13,8 +12,6 @@ interface RouteSettingsProps {
   location: string;
   setLocation: (l: string) => void;
   setUserLocation: (p: { lat: number; lng: number }) => void;
-  surface: SurfacePreference;
-  setSurface: (s: SurfacePreference) => void;
 }
 
 export default function RouteSettings({
@@ -25,8 +22,6 @@ export default function RouteSettings({
   location,
   setLocation,
   setUserLocation,
-  surface,
-  setSurface,
 }: RouteSettingsProps) {
   const [open, setOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<{ label: string; lat: number; lng: number }[]>([]);
@@ -54,7 +49,7 @@ export default function RouteSettings({
     }
   };
 
-  const moreOptionsLabel = `${location ? location.split(',')[0] : 'No location set'} · ${surface}`;
+  const moreOptionsLabel = location ? location.split(',')[0] : 'No location set';
 
   return (
     <div className="border-t border-divider mt-4 pt-4 space-y-4">
@@ -166,26 +161,6 @@ export default function RouteSettings({
                 </div>
               </div>
 
-              {/* Surface */}
-              <div className="space-y-2">
-                <label className="text-[11px] font-sans font-medium uppercase tracking-[0.12em] text-text-secondary ml-1">Surface</label>
-                <div className="flex gap-2">
-                  {(["roads", "trails", "mixed"] as SurfacePreference[]).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setSurface(s)}
-                      className={cn(
-                        "flex-1 h-[32px] px-4 rounded-full text-[12px] font-sans font-medium uppercase tracking-[0.08em] transition-all duration-200",
-                        surface === s
-                          ? "bg-accent-primary text-white"
-                          : "bg-bg-subtle text-text-secondary hover:text-white"
-                      )}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </motion.div>
           )}
         </AnimatePresence>

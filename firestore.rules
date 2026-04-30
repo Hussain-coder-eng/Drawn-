@@ -86,11 +86,11 @@ service cloud.firestore {
              data.uid == request.auth.uid &&
              data.label is string && data.label.size() > 0 && data.label.size() < 100 &&
              data.mode in ['shapes', 'text', 'draw'] &&
-             data.distance is number && data.distance > 0 &&
+             data.distance is number && data.distance > 0 && data.distance <= 200 &&
              data.unit in ['mi', 'km'] &&
              data.timestamp is number &&
-             (data.idealCoords is list || !('idealCoords' in data)) &&
-             (data.snappedCoords is list || !('snappedCoords' in data));
+             (!('idealCoords' in data) || (data.idealCoords is list && data.idealCoords.size() <= 2000)) &&
+             (!('snappedCoords' in data) || (data.snappedCoords is list && data.snappedCoords.size() <= 10000));
     }
 
     function isValidRateLimit(data) {
@@ -102,11 +102,12 @@ service cloud.firestore {
     function isValidRun(data) {
       return data.keys().hasAll(['userId', 'shapeName', 'distanceM', 'elapsedSeconds', 'completedAt']) &&
              data.userId == request.auth.uid &&
-             data.shapeName is string &&
-             data.distanceM is number &&
-             data.elapsedSeconds is number &&
+             data.shapeName is string && data.shapeName.size() > 0 && data.shapeName.size() < 50 &&
+             data.distanceM is number && data.distanceM >= 0 && data.distanceM <= 500000 &&
+             data.elapsedSeconds is number && data.elapsedSeconds >= 0 && data.elapsedSeconds <= 86400 &&
+             (!('avgPaceSecPerKm' in data) || (data.avgPaceSecPerKm is number && data.avgPaceSecPerKm >= 0 && data.avgPaceSecPerKm <= 7200)) &&
              data.completedAt is timestamp &&
-             (data.completedPolyline is list || !('completedPolyline' in data));
+             (!('completedPolyline' in data) || (data.completedPolyline is list && data.completedPolyline.size() <= 10000));
     }
 
     // ===============================================================

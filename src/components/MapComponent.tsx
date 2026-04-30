@@ -1,6 +1,6 @@
 import { MapContainer, TileLayer, Polyline, Marker, useMap } from "react-leaflet";
 import L from "leaflet";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { cn } from "@/src/lib/utils";
 import { InputMode } from "@/src/types";
 import { Maximize, ZoomIn, ZoomOut, Navigation } from "lucide-react";
@@ -35,6 +35,27 @@ function MapController({ center, zoom }: { center: [number, number]; zoom: numbe
   return null;
 }
 
+// Component to recenter map on demand
+function RecenterMap({ trigger, center, snappedCoords, hasResult }: {
+  trigger: number;
+  center: [number, number];
+  snappedCoords: [number, number][];
+  hasResult: boolean;
+}) {
+  const map = useMap();
+  const prevTrigger = useRef(trigger);
+  useEffect(() => {
+    if (trigger === prevTrigger.current) return;
+    prevTrigger.current = trigger;
+    if (hasResult && snappedCoords.length > 1) {
+      map.fitBounds(L.latLngBounds(snappedCoords), { padding: [60, 60] });
+    } else {
+      map.setView(center, 13);
+    }
+  }, [trigger]);
+  return null;
+}
+
 // Component to fit bounds to snapped route
 function FitBounds({ coords, hasResult }: { coords: [number, number][]; hasResult: boolean }) {
   const map = useMap();
@@ -56,6 +77,7 @@ export default function MapComponent({
   center,
 }: MapComponentProps) {
   const [zoom, setZoom] = useState(13);
+  const [recenterTrigger, setRecenterTrigger] = useState(0);
 
   const leafletIdeal = useMemo(() => idealCoords.map(p => [p.lat, p.lng] as [number, number]), [idealCoords]);
   const leafletSnapped = useMemo(() => snappedCoords.map(p => [p.lat, p.lng] as [number, number]), [snappedCoords]);
@@ -74,6 +96,7 @@ export default function MapComponent({
         />
         <MapController center={[center.lat, center.lng]} zoom={zoom} />
         <FitBounds coords={leafletSnapped} hasResult={hasResult} />
+        <RecenterMap trigger={recenterTrigger} center={[center.lat, center.lng]} snappedCoords={leafletSnapped} hasResult={hasResult} />
 
         {/* Ghost Overlay */}
         {!hasResult && leafletIdeal.length > 0 && (
@@ -137,10 +160,8 @@ export default function MapComponent({
             <ZoomOut className="w-5 h-5" />
           </button>
         </div>
-        <button 
-          onClick={() => {
-            // Recenter logic
-          }}
+        <button
+          onClick={() => setRecenterTrigger(t => t + 1)}
           className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] p-3 shadow-2xl hover:bg-white/5 text-white transition-colors"
         >
           <Navigation className="w-5 h-5" />

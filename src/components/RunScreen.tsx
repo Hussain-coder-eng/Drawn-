@@ -292,7 +292,7 @@ function formatElapsedTime(seconds: number) {
 }
 
 function formatPace(secPerKm: number | null) {
-  if (!secPerKm) return '--:--';
+  if (!secPerKm || !isFinite(secPerKm)) return '--:--';
   const m = Math.floor(secPerKm / 60);
   const s = Math.round(secPerKm % 60);
   return `${m}:${String(s).padStart(2,'0')}`;

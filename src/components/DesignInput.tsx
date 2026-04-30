@@ -1,5 +1,5 @@
 // src/components/DesignInput.tsx
-import { SHAPES, FONT_STYLES } from "@/src/constants";
+import { SHAPES } from "@/src/constants";
 import { cn } from "@/src/lib/utils";
 import { InputMode } from "@/src/types";
 import { motion } from "motion/react";
@@ -14,8 +14,6 @@ interface DesignInputProps {
   setSelectedShape: (id: string | null) => void;
   textInput: string;
   setTextInput: (text: string) => void;
-  fontStyle: string;
-  setFontStyle: (id: string) => void;
   drawnPath: Point[];
   setDrawnPath: (path: Point[]) => void;
   setNormalizedDrawnPath: (path: NormalizedPoint[]) => void;
@@ -29,8 +27,6 @@ export default function DesignInput({
   setSelectedShape,
   textInput,
   setTextInput,
-  fontStyle,
-  setFontStyle,
   drawnPath,
   setDrawnPath,
   setNormalizedDrawnPath,
@@ -126,21 +122,6 @@ export default function DesignInput({
                 placeholder="Type a word or name…"
                   className="w-full h-[52px] bg-bg-card border border-divider rounded-[10px] pl-12 pr-4 text-[15px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
                 />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {FONT_STYLES.map((font) => (
-                  <button
-                    key={font.id}
-                    onClick={() => setFontStyle(font.id)}
-                    className={cn(
-                      "flex flex-col items-center justify-center py-3 rounded-[10px] border-[1.5px] transition-all duration-200",
-                      fontStyle === font.id ? "border-accent-primary bg-bg-card" : "border-transparent bg-bg-card hover:border-divider"
-                    )}
-                  >
-                    <span className={cn(font.className, "text-[14px]", fontStyle === font.id ? "text-white" : "text-text-secondary")}>A</span>
-                    <span className="text-[10px] font-sans font-medium uppercase tracking-widest text-text-muted mt-1">{font.label}</span>
-                  </button>
-                ))}
               </div>
             </div>
           )}

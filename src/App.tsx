@@ -617,8 +617,6 @@ export default function App() {
         setSelectedShape={(id) => updateState({ selectedShape: id, hasResult: false })}
         textInput={state.textInput}
         setTextInput={(text) => updateState({ textInput: text, hasResult: false })}
-        fontStyle={state.fontStyle}
-        setFontStyle={(id) => updateState({ fontStyle: id, hasResult: false })}
         drawnPath={state.drawnPath}
         setDrawnPath={(path) => updateState({ drawnPath: path, hasResult: false })}
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
@@ -637,8 +635,6 @@ export default function App() {
         location={state.location}
         setLocation={(l) => updateState({ location: l, hasResult: false })}
         setUserLocation={(p) => setUserLocation(p)}
-        surface={state.surface}
-        setSurface={(s) => updateState({ surface: s, hasResult: false })}
       />
 
       {error && (

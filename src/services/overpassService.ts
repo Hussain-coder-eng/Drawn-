@@ -84,10 +84,10 @@ export class OverpassService {
     "https://overpass.openstreetmap.fr/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.viatech.com.ua/api/interpreter",
-    "https://overpass.tiekoetter.com/api/interpreter",
-    "https://overpass.jojo-t.me/api/interpreter",
-    "https://overpass.nchc.org.tw/api/interpreter"
+    // Removed: overpass.osm.viatech.com.ua — ERR_NAME_NOT_RESOLVED
+    // Removed: overpass.tiekoetter.com — ERR_CERT_COMMON_NAME_INVALID
+    // Removed: overpass.jojo-t.me — ERR_NAME_NOT_RESOLVED
+    // Removed: overpass.nchc.org.tw — ERR_NAME_NOT_RESOLVED
   ];
 
   private getShuffledMirrors(): string[] {
