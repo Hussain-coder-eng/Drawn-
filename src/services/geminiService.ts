@@ -1,12 +1,11 @@
 import * as turf from "@turf/turf";
-import { GoogleGenAI, Type } from "@google/genai";
 import { jsonrepair } from "jsonrepair";
+import { addDoc, collection, onSnapshot, serverTimestamp } from "firebase/firestore";
 import { Point } from "../lib/shapeMath";
 import { OSMNode } from "./overpassService";
 import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness, StageScore } from "./fitnessService";
-import { RateLimiter } from "./rateLimiter";
-import { measureLatency } from "../lib/latency";
+import { auth, db } from "../firebase";
 
 const SYSTEM_PROMPT = `
 You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
@@ -32,171 +31,61 @@ Return ONLY JSON:
 }
 `;
 
-/**
- * Client-side abort for `generateContent`.
- * 25s per attempt with 1 retry keeps total worst-case under ~55s.
- */
-const GEMINI_REQUEST_TIMEOUT_MS = 25_000;
-const GEMINI_TIMEOUT_MAX_RETRIES = 1;
-
 export interface GeminiStagedResult {
   startNodeId: number;
   stages: { stageNumber: number; nodeIds: number[] }[];
 }
 
 export class GeminiService {
-  private rateLimiter: RateLimiter;
   private cache: Map<string, GeminiStagedResult> = new Map();
 
-  private static isAbortLikeError(err: unknown): boolean {
-    if (err == null || typeof err !== "object") return false;
-    const e = err as { name?: string; message?: string };
-    const name = e.name ?? "";
-    const msg = (e.message ?? "").toLowerCase();
-    if (name === "AbortError" || name === "TimeoutError") return true;
-    if (msg.includes("abort")) return true;
-    if (typeof DOMException !== "undefined" && err instanceof DOMException) {
-      if (err.name === "TimeoutError" || err.name === "AbortError") return true;
-      if (err.code === 20) return true; // DOMException.ABORT_ERR
-    }
-    return false;
-  }
+  private async submitGeminiJob(
+    prompt: string,
+    cacheKey: string,
+    onProgress?: (msg: string) => void
+  ): Promise<string> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("You must be signed in to generate a route.");
 
-  private static logGeminiFailure(context: string, err: unknown, extra: Record<string, unknown> = {}): void {
-    const payload: Record<string, unknown> = { context, ...extra };
-    if (err instanceof Error) {
-      payload.errorName = err.name;
-      payload.errorMessage = err.message;
-      payload.errorStack = err.stack;
-    } else {
-      payload.errorType = typeof err;
-      payload.errorString = String(err);
-    }
-    if (typeof DOMException !== "undefined" && err instanceof DOMException) {
-      payload.domException = true;
-      payload.domExceptionName = err.name;
-      payload.domExceptionCode = err.code;
-    }
-    const anyErr = err as { cause?: unknown };
-    if (anyErr?.cause !== undefined) {
-      const c = anyErr.cause;
-      payload.cause =
-        c instanceof Error ? { name: c.name, message: c.message } : c;
-    }
-    console.error("[Gemini]", payload);
-  }
+    const jobRef = await addDoc(collection(db, "jobs"), {
+      uid: user.uid,
+      status: "pending",
+      prompt,
+      cacheKey,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
 
-  constructor() {
-    // Limit to 5 requests per minute to stay well within free tier limits
-    this.rateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 60000 });
-  }
+    return new Promise<string>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        unsubscribe();
+        reject(new Error("Route generation timed out. Please try again."));
+      }, 120_000);
 
-  private getAI(): GoogleGenAI {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("Gemini API key is missing. Please check your settings.");
-    }
-    return new GoogleGenAI({ apiKey });
-  }
-
-  private static isNetworkError(err: unknown): boolean {
-    if (err == null || typeof err !== "object") return false;
-    const e = err as { name?: string; message?: string };
-    const name = (e.name ?? "").toLowerCase();
-    const msg = (e.message ?? "").toLowerCase();
-    // Covers: TypeError: Failed to fetch, NetworkError, ERR_NETWORK, etc.
-    return (
-      msg.includes("failed to fetch") ||
-      msg.includes("networkerror") ||
-      msg.includes("network error") ||
-      name === "networkerror" ||
-      msg.includes("err_network") ||
-      msg.includes("load failed") // Safari's equivalent of "Failed to fetch"; also fires on CORS errors — accepted as safe false-positive for this endpoint
-    );
-  }
-
-  private async callWithRetry(
-    fn: () => Promise<any>,
-    maxRetries = 6,
-    onProgress?: (msg: string) => void,
-    operationLabel?: string
-  ): Promise<any> {
-    let attempt = 0;
-    let timeoutAttempts = 0;
-    while (attempt < maxRetries) {
-      try {
-        return await fn();
-      } catch (error: any) {
-        attempt++;
-        console.error("[Gemini]", {
-          event: "callWithRetry_catch",
-          operationLabel,
-          attempt,
-          maxRetries,
-          isAbortLike: GeminiService.isAbortLikeError(error),
-          isNetworkError: GeminiService.isNetworkError(error),
-          errorName: error?.name,
-          errorMessage: error?.message,
-        });
-        const errorStr = JSON.stringify(error);
-        const isRateLimit = error.message?.includes("429") ||
-                            error.status === "RESOURCE_EXHAUSTED" ||
-                            errorStr.includes("429") ||
-                            errorStr.includes("RESOURCE_EXHAUSTED");
-
-        const isQuotaExceeded = errorStr.includes("exceeded your current quota") ||
-                                error.message?.includes("quota") ||
-                                error.message?.includes("RESOURCE_EXHAUSTED");
-
-        const isUnavailable = error.status === "UNAVAILABLE" ||
-                              errorStr.includes("503") ||
-                              errorStr.includes("UNAVAILABLE") ||
-                              error.message?.includes("503") ||
-                              error.message?.includes("high demand");
-
-        const isNetworkBlip = GeminiService.isNetworkError(error);
-        const isTimeout = GeminiService.isAbortLikeError(error);
-
-        if (isQuotaExceeded) {
-          const quotaMsg = "Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. You can try again tomorrow, or use the 'Fine-tune' feature to manually adjust your route if you have a partial result.";
-          throw new Error(quotaMsg);
-        }
-
-        // Timeout: allow at most GEMINI_TIMEOUT_MAX_RETRIES retries with a ~5s delay.
-        // Each attempt has a 25s timeout so total worst-case stays under ~55s.
-        if (isTimeout && timeoutAttempts < GEMINI_TIMEOUT_MAX_RETRIES) {
-          timeoutAttempts++;
-          const delay = 5000 + Math.random() * 1000;
-          const delaySec = Math.round(delay / 1000);
-          console.warn(`[DEBUG] Gemini Timeout. Retrying in ${Math.round(delay)}ms... (Timeout attempt ${timeoutAttempts}/${GEMINI_TIMEOUT_MAX_RETRIES})`);
-          onProgress?.(`AI is taking longer than expected — retrying in ${delaySec}s…`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          onProgress?.("AI is analyzing the road network...");
-          continue;
-        }
-
-        if ((isRateLimit || isUnavailable || isNetworkBlip) && attempt < maxRetries) {
-          // For 503 server overload: longer base delay (3s), capped at 15s. For 429/network: 0.5s base.
-          const baseMs = isUnavailable ? 3000 : 500;
-          const delay = Math.min(Math.pow(2, attempt - 1) * baseMs + Math.random() * 1000, isUnavailable ? 15000 : Infinity);
-          const delaySec = Math.round(delay / 1000);
-          if (isUnavailable) {
-            console.warn(`[DEBUG] Gemini Unavailable (503). Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`Gemini is busy — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
-          } else if (isNetworkBlip) {
-            console.warn(`[DEBUG] Gemini network error. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`Connection issue — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
-          } else {
-            console.warn(`[DEBUG] Gemini Rate Limit hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`AI rate limit reached — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
+      const unsubscribe = onSnapshot(
+        jobRef,
+        (snap) => {
+          const data = snap.data();
+          if (!data) return;
+          if (data.status === "done") {
+            clearTimeout(timeoutHandle);
+            unsubscribe();
+            resolve(data.result as string);
+          } else if (data.status === "failed") {
+            clearTimeout(timeoutHandle);
+            unsubscribe();
+            reject(new Error((data.error as string) || "Route generation failed."));
+          } else if (data.status === "processing") {
+            onProgress?.("AI is analyzing the road network...");
           }
-          await new Promise(resolve => setTimeout(resolve, delay));
-          onProgress?.("AI is analyzing the road network...");
-          continue;
+        },
+        (error) => {
+          clearTimeout(timeoutHandle);
+          unsubscribe();
+          reject(error);
         }
-        throw error;
-      }
-    }
+      );
+    });
   }
 
   private samplePoints(points: Point[], n: number): Point[] {
@@ -250,21 +139,12 @@ export class GeminiService {
     if (!script || !Array.isArray(script)) {
       throw new Error("Invalid shape script provided to AI.");
     }
-    const ai = this.getAI();
-    const model = "gemini-2.5-flash";
 
     // 0. Check Cache
     const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
     if (this.cache.has(cacheKey)) {
       console.log("[DEBUG] Returning cached Gemini result");
       return this.cache.get(cacheKey)!;
-    }
-
-    // 1. Rate Limit Check
-    try {
-      await this.rateLimiter.check();
-    } catch (e: any) {
-      throw new Error(`AI is busy: ${e.message}`);
     }
 
     onProgress?.("AI is analyzing the road network...");
@@ -339,88 +219,9 @@ ${stageBlocks}
 Preferred start node ID: ${aiStartNodeIndex}
 `;
 
-    let response;
-    const apiCallStartedAt = performance.now();
-    try {
-      console.info("[Gemini] request_meta", {
-        operation: "selectNodesStaged",
-        model,
-        promptCharLength: prompt.length,
-        stageCount: script.length,
-        stagePoolSizes: stageNodePools.map(p => p.length),
-        stagePoolSizesCapped: stageNodePools.map(p => Math.min(p.length, MAX_NODES_PER_STAGE)),
-        timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-      });
-      const { data: res } = await measureLatency("Gemini:GenerateContent", async () => {
-        return await this.callWithRetry(() => ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-            // Disable thinking: node selection is a deterministic lookup task,
-            // not a reasoning task. Thinking adds latency and token cost with
-            // no quality benefit for structured JSON output.
-            thinkingConfig: { thinkingBudget: 0 },
-            abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                startNodeId: { type: Type.STRING },
-                stages: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      stageNumber: { type: Type.INTEGER },
-                      nodeIds: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                      }
-                    },
-                    required: ["stageNumber", "nodeIds"]
-                  }
-                }
-              },
-              required: ["startNodeId", "stages"]
-            }
-          }
-        }), 4, onProgress, "selectNodesStaged");
-      }, { silent: true });
-      response = res;
-    } catch (apiError: any) {
-      const elapsedMs = Math.round(performance.now() - apiCallStartedAt);
-      GeminiService.logGeminiFailure("selectNodesStaged:generateContent", apiError, {
-        elapsedMs,
-        configuredTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-        isAbortLike: GeminiService.isAbortLikeError(apiError),
-      });
-      if (apiError.message?.includes("Quota Exceeded")) {
-        throw apiError;
-      }
-      const errorStr = JSON.stringify(apiError);
-      const isUnavailable = apiError.status === "UNAVAILABLE" ||
-                            errorStr.includes("503") ||
-                            errorStr.includes("UNAVAILABLE") ||
-                            apiError.message?.includes("high demand");
-      if (isUnavailable) {
-        throw new Error("Gemini is currently experiencing high demand. Please try again in a few moments.");
-      }
-      if (GeminiService.isAbortLikeError(apiError)) {
-        throw new Error(
-          `The AI request timed out after ${Math.round(GEMINI_REQUEST_TIMEOUT_MS / 1000)}s. Try again, or simplify the shape or map area.`
-        );
-      }
-      throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
-    }
+    onProgress?.("AI is analyzing the road network...");
+    const text = await this.submitGeminiJob(prompt, cacheKey, onProgress);
 
-    let text = response.text;
-    if (!text) {
-      console.error("[DEBUG] Gemini returned an empty response.", response);
-      throw new Error("Gemini returned an empty response.");
-    }
-    
     try {
       // Robust repair and parse
       const repaired = jsonrepair(text);
@@ -437,7 +238,6 @@ Preferred start node ID: ${aiStartNodeIndex}
       };
 
       // Cache result
-      const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
       this.cache.set(cacheKey, finalResult);
 
       return finalResult;
@@ -459,16 +259,6 @@ Preferred start node ID: ${aiStartNodeIndex}
     nodeMap: Map<string, any>,
     onProgress?: (msg: string) => void
   ): Promise<GeminiStagedResult> {
-    const ai = this.getAI();
-    const model = "gemini-2.5-flash";
-
-    // Rate Limit Check
-    try {
-      await this.rateLimiter.check();
-    } catch (e: any) {
-      throw new Error(`AI is busy: ${e.message}`);
-    }
-
     onProgress?.("AI is refining the route...");
 
     // Rebuild global index map from all stage pools
@@ -525,90 +315,21 @@ Return a JSON object with a "stages" array containing ONLY the replanned stages.
 Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that stage's available nodes list.
 `;
 
-    let response;
-    const rerouteApiCallStartedAt = performance.now();
-    try {
-      console.info("[Gemini] request_meta", {
-        operation: "rerouteFailingStages",
-        model,
-        promptCharLength: reroutePrompt.length,
-        failingStageCount: (fitnessResult.failingStages || []).length,
-        scriptStageCount: script.length,
-        stagePoolSizes: stageNodePools.map(p => p.length),
-        timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-      });
-      const { data: rerouteRes } = await measureLatency("Gemini:RerouteStages", async () => {
-        return await this.callWithRetry(() => ai.models.generateContent({
-          model,
-          contents: reroutePrompt,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-            // Disable thinking: same rationale as selectNodesStaged — rerouting
-            // is a constrained lookup task, not a reasoning task.
-            thinkingConfig: { thinkingBudget: 0 },
-            abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                stages: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      stageNumber: { type: Type.INTEGER },
-                      nodeIds: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                      }
-                    },
-                    required: ["stageNumber", "nodeIds"]
-                  }
-                }
-              },
-              required: ["stages"]
-            }
-          }
-        }), 1, onProgress, "rerouteFailingStages");
-      }, { silent: true });
-      response = rerouteRes;
-    } catch (apiError: any) {
-      const elapsedMs = Math.round(performance.now() - rerouteApiCallStartedAt);
-      GeminiService.logGeminiFailure("rerouteFailingStages:generateContent", apiError, {
-        elapsedMs,
-        configuredTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-        isAbortLike: GeminiService.isAbortLikeError(apiError),
-      });
-      if (apiError.message?.includes("Quota Exceeded")) {
-        throw apiError;
-      }
-      const errorStr = JSON.stringify(apiError);
-      const isUnavailable = apiError.status === "UNAVAILABLE" ||
-                            errorStr.includes("503") ||
-                            errorStr.includes("UNAVAILABLE") ||
-                            apiError.message?.includes("high demand");
-      if (isUnavailable) {
-        throw new Error("Gemini is currently experiencing high demand. Please try again in a few moments.");
-      }
-      if (GeminiService.isAbortLikeError(apiError)) {
-        throw new Error(
-          `The AI request timed out after ${Math.round(GEMINI_REQUEST_TIMEOUT_MS / 1000)}s. Try again, or simplify the shape or map area.`
-        );
-      }
-      throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
-    }
+    const rerouteCacheKey = JSON.stringify({
+      op: "reroute",
+      shapeName,
+      distanceKm,
+      startNodeId: previousResult.startNodeId,
+      failingStages: (fitnessResult.failingStages || []).map(s => s.stageNumber).sort(),
+    });
 
-    let text = response.text;
-    if (!text) {
-      console.error("[DEBUG] Gemini returned an empty response.", response);
-      throw new Error("Gemini returned an empty response.");
-    }
+    onProgress?.("AI is refining the route...");
+    const text = await this.submitGeminiJob(reroutePrompt, rerouteCacheKey, onProgress);
 
     try {
       const repaired = jsonrepair(text);
       const result = JSON.parse(repaired);
-      
+
       // Basic validation of the new stages
       if (!result.stages || !Array.isArray(result.stages)) {
         throw new Error("AI returned invalid refinement data.");
@@ -661,7 +382,7 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
     if (result.stages.length === 0) {
       throw new Error("AI returned an empty stages array.");
     }
-    
+
     // Filter out any null/undefined/empty objects that might have slipped through
     result.stages = result.stages.filter((s: any) => s && typeof s === "object" && Object.keys(s).length > 0);
 
@@ -694,4 +415,3 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
     });
   }
 }
-
