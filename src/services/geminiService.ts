@@ -81,6 +81,7 @@ export class GeminiService {
         },
         (error) => {
           clearTimeout(timeoutHandle);
+          unsubscribe();
           reject(error);
         }
       );
@@ -317,6 +318,8 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
     const rerouteCacheKey = JSON.stringify({
       op: "reroute",
       shapeName,
+      distanceKm,
+      startNodeId: previousResult.startNodeId,
       failingStages: (fitnessResult.failingStages || []).map(s => s.stageNumber).sort(),
     });
 
