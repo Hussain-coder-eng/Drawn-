@@ -109,6 +109,8 @@ export const processGeminiJob = onDocumentCreated(
     const prompt: string = raw.prompt;
     const cacheKey: string = raw.cacheKey;
 
+    if (!uid || !prompt || !cacheKey) return;
+
     // 1. Per-user rate limit
     const userRef = db.collection("users").doc(uid);
     try {
