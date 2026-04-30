@@ -290,20 +290,20 @@ export class GeminiService {
     }));
 
     // Sample 10 points from ideal path for shape reference
-    const idealPathSample = this.samplePoints(idealPath, 10);
+    const idealPathSample = this.samplePoints(idealPath, 5);
     const idealPathStr = idealPathSample
-      .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+      .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
       .join(' → ');
 
     // Build per-stage blocks — cap at 80 nodes per stage to keep prompts fast.
     // Nodes are sorted by proximity to the stage midpoint so the closest (most useful) ones are kept.
-    const MAX_NODES_PER_STAGE = 80;
+    const MAX_NODES_PER_STAGE = 40;
     const stageBlocks = stageDistances.map((s, i) => {
       const pool = stageNodePools[i] || [];
       const idealSubPath = idealStagePaths[i] || [];
       const idealSubSampled = this.samplePoints(idealSubPath, 3);
       const idealSubStr = idealSubSampled
-        .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+        .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
 
       // Trim pool to the N closest nodes to the stage midpoint
@@ -323,7 +323,7 @@ export class GeminiService {
       const nodesStr = trimmedPool
         .map(n => {
           const nodeIdx = idToIndex.get(n.id) || '?';
-          return `${nodeIdx}: ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
+          return `${nodeIdx}: ${n.lat.toFixed(4)}, ${n.lng.toFixed(4)}`;
         })
         .join('\n');
       return `=== STAGE ${s.stage}: Move ${s.direction}, target ${s.targetDistanceKm.toFixed(2)}km ===\nIdeal path for this stage: ${idealSubStr}\nAvailable nodes (ID: lat, lng):\n${nodesStr}`;
@@ -497,12 +497,12 @@ Preferred start node ID: ${aiStartNodeIndex}
       const targetDist = stageDistances[stageIdx]?.targetDistanceKm;
       const deviation = this.computeStageSpatialDeviation(s, previousResult, idealSubPath, nodeMap);
       const idealSubStr = this.samplePoints(idealSubPath, 3)
-        .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+        .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
       const nodesStr = pool
         .map(n => {
           const nodeIdx = idToIndex.get(n.id) || '?';
-          return `${nodeIdx}: ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
+          return `${nodeIdx}: ${n.lat.toFixed(4)}, ${n.lng.toFixed(4)}`;
         })
         .join('\n');
 
@@ -570,7 +570,7 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
               required: ["stages"]
             }
           }
-        }), 2, onProgress, "rerouteFailingStages");
+        }), 1, onProgress, "rerouteFailingStages");
       }, { silent: true });
       response = rerouteRes;
     } catch (apiError: any) {
