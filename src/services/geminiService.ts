@@ -295,7 +295,7 @@ export class GeminiService {
       .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
       .join(' → ');
 
-    // Build per-stage blocks — cap at 80 nodes per stage to keep prompts fast.
+    // Build per-stage blocks — cap at 40 nodes per stage to keep prompts fast.
     // Nodes are sorted by proximity to the stage midpoint so the closest (most useful) ones are kept.
     const MAX_NODES_PER_STAGE = 40;
     const stageBlocks = stageDistances.map((s, i) => {
