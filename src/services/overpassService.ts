@@ -176,12 +176,14 @@ export class OverpassService {
             throw new Error("No elements");
           }
 
-          // Success — abort all other in-flight requests
-          clearTimeout(globalTimeout);
+          // Abort all other in-flight requests (fetch is done for this mirror)
           controllers.forEach((c, cIdx) => { if (cIdx !== idx) c.abort(); });
 
           onProgress?.("Processing map data in background...");
           const network = await this.processOSMDataWithWorker(data);
+
+          // Only clear global timeout after worker has fully resolved
+          clearTimeout(globalTimeout);
           this.cache.set(cacheKey, { network, timestamp: Date.now() });
           this.saveCache();
           return network;
@@ -205,10 +207,24 @@ export class OverpassService {
   private async processOSMDataWithWorker(data: any): Promise<RoadNetwork> {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('../workers/overpassWorker.ts', import.meta.url), { type: 'module' });
-      
+
+      const fallback = (reason: string) => {
+        worker.terminate();
+        console.warn(`[DEBUG] Worker ${reason} — falling back to main-thread processing`);
+        try {
+          resolve(this.processOSMData(data));
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      // Safety net: if worker hangs for any reason, fall back to synchronous processing
+      const timeout = setTimeout(() => fallback('timed out after 10s'), 10_000);
+
       worker.onmessage = (e) => {
+        clearTimeout(timeout);
         const { nodes, nodeMap, edgeMap, bounds } = e.data;
-        
+
         // Convert plain objects back to Maps
         const nMap = new Map<string, OSMNode>();
         for (const [k, v] of Object.entries(nodeMap)) {
@@ -224,9 +240,14 @@ export class OverpassService {
         resolve({ nodes, nodeMap: nMap, edgeMap: eMap, bounds });
       };
 
-      worker.onerror = (err) => {
-        worker.terminate();
-        reject(err);
+      worker.onerror = () => {
+        clearTimeout(timeout);
+        fallback('errored');
+      };
+
+      worker.onmessageerror = () => {
+        clearTimeout(timeout);
+        fallback('message deserialization failed');
       };
 
       worker.postMessage({ data });

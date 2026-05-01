@@ -1,5 +1,3 @@
-import * as turf from "@turf/turf";
-
 /**
  * This worker handles the heavy lifting of processing OpenStreetMap JSON data
  * into a searchable RoadNetwork graph.
