@@ -1,7 +1,8 @@
 // src/components/RouteSettings.tsx
 import { cn } from "@/src/lib/utils";
 import { MapPin, ChevronDown, ChevronUp } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 
 interface RouteSettingsProps {
@@ -28,6 +29,15 @@ export default function RouteSettings({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (showSuggestions && inputRef.current) {
+      const rect = inputRef.current.getBoundingClientRect();
+      setDropdownRect({ top: rect.bottom + 8, left: rect.left, width: rect.width });
+    }
+  }, [showSuggestions]);
 
   const searchLocation = async (query: string) => {
     if (query.length < 3) return;
@@ -122,6 +132,7 @@ export default function RouteSettings({
                     )}
                   </div>
                   <input
+                    ref={inputRef}
                     type="text"
                     data-testid="location-input"
                     value={location}
@@ -140,8 +151,11 @@ export default function RouteSettings({
                     placeholder="Starting point…"
                     className="w-full h-[48px] bg-bg-card border border-divider rounded-[10px] pl-10 pr-4 text-[14px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
                   />
-                  {showSuggestions && (
-                    <div className="absolute z-50 w-full mt-2 bg-bg-card border border-divider rounded-[16px] shadow-2xl overflow-hidden max-h-[200px] overflow-y-auto">
+                  {showSuggestions && dropdownRect && createPortal(
+                    <div
+                      className="bg-bg-card border border-divider rounded-[16px] shadow-2xl max-h-[200px] overflow-y-auto"
+                      style={{ position: "fixed", top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width, zIndex: 9999 }}
+                    >
                       {suggestions.map((s, i) => (
                         <button
                           key={i}
@@ -156,7 +170,8 @@ export default function RouteSettings({
                           <div className="text-[11px] font-sans text-text-secondary line-clamp-1">{s.label.split(',').slice(1).join(',').trim()}</div>
                         </button>
                       ))}
-                    </div>
+                    </div>,
+                    document.body
                   )}
                 </div>
               </div>
