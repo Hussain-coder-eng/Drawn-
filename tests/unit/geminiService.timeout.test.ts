@@ -37,8 +37,10 @@ describe("GeminiService in-memory cache", () => {
   });
 
   it("does not call submitGeminiJob on cache hit", async () => {
-    // Pre-populate in-memory cache (nodePoolHash: "" for empty pools)
-    const cacheKey = JSON.stringify({ shapeName: "circle", distanceKm: 5, startNodeId: 1, script: [], nodePoolHash: "" });
+    // Pre-populate in-memory cache
+    // Format: firestoreCacheKey + '|' + nodePoolHash (empty string for empty pools)
+    const firestoreCacheKey = JSON.stringify({ shapeName: "circle", distanceKm: 5, startNodeId: 1, script: [] });
+    const cacheKey = firestoreCacheKey + '|';
     const cachedResult = { startNodeId: 1, stages: [] };
     (service as any).cache.set(cacheKey, cachedResult);
 

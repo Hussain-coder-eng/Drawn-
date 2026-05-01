@@ -117,13 +117,16 @@ export class GeminiService {
     }
 
     // 0. Check Cache
-    // Include a hash of the first 10 node IDs per pool so cached results are invalidated
-    // when the road network changes (e.g. user moves, cache expires, different fetch).
+    // firestoreCacheKey: stable identifier used in the Firestore job doc (must stay ≤500 chars
+    //   per security rules). Shared with the Cloud Function for server-side caching.
+    // inMemoryCacheKey: includes a node-pool fingerprint so stale results are invalidated
+    //   when the road network changes; only used in this process's Map.
+    const firestoreCacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
     const nodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
-    const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage), nodePoolHash });
-    if (this.cache.has(cacheKey)) {
+    const inMemoryCacheKey = firestoreCacheKey + '|' + nodePoolHash;
+    if (this.cache.has(inMemoryCacheKey)) {
       console.log("[DEBUG] Returning cached Gemini result");
-      return this.cache.get(cacheKey)!;
+      return this.cache.get(inMemoryCacheKey)!;
     }
 
     // Build a global index map across all stage pools (deduplicating shared nodes)
@@ -197,7 +200,7 @@ Preferred start node ID: ${aiStartNodeIndex}
 `;
 
     onProgress?.("AI is analyzing the road network...");
-    const text = await this.submitGeminiJob(prompt, cacheKey, onProgress);
+    const text = await this.submitGeminiJob(prompt, firestoreCacheKey, onProgress);
 
     try {
       // Robust repair and parse
@@ -214,8 +217,8 @@ Preferred start node ID: ${aiStartNodeIndex}
         }))
       };
 
-      // Cache result
-      this.cache.set(cacheKey, finalResult);
+      // Cache result (use inMemoryCacheKey which includes node-pool fingerprint)
+      this.cache.set(inMemoryCacheKey, finalResult);
 
       return finalResult;
     } catch (e: any) {
