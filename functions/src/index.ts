@@ -3,6 +3,7 @@ import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { GoogleGenAI } from "@google/genai";
+import { createHash } from "crypto";
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
 
@@ -176,7 +177,10 @@ export const processGeminiJob = onDocumentCreated(
       await jobRef.update({ status: "processing", updatedAt: Timestamp.now() });
 
       // 3. Shared Firestore cache
-      const safeCacheKey = cacheKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+      // Hash the cacheKey so the document ID is always a valid 64-char hex string.
+      // The naive replace(/[^a-zA-Z0-9_-]/g, "_") approach produced IDs starting/ending
+      // with "__" which Firestore reserves, causing INVALID_ARGUMENT errors.
+      const safeCacheKey = createHash("sha256").update(cacheKey).digest("hex");
       const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
       const cacheSnap = await cacheRef.get();
       if (cacheSnap.exists) {
