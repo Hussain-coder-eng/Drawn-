@@ -71,7 +71,28 @@ export class OverpassService {
           }
         };
       });
-      sessionStorage.setItem('overpass_cache', JSON.stringify(toSave));
+      try {
+        sessionStorage.setItem('overpass_cache', JSON.stringify(toSave));
+      } catch (quotaErr: any) {
+        // Storage quota exceeded — evict all but the most recent entry and retry once
+        if (quotaErr?.name === 'QuotaExceededError' || quotaErr?.code === 22) {
+          sessionStorage.removeItem('overpass_cache');
+          const entries = [...this.cache.entries()];
+          if (entries.length > 0) {
+            const newest = entries.sort((a, b) => b[1].timestamp - a[1].timestamp)[0];
+            const slim: any = {};
+            slim[newest[0]] = {
+              ...newest[1],
+              network: {
+                ...newest[1].network,
+                edgeMap: Object.fromEntries(newest[1].network.edgeMap),
+                nodeMap: Object.fromEntries(newest[1].network.nodeMap)
+              }
+            };
+            try { sessionStorage.setItem('overpass_cache', JSON.stringify(slim)); } catch { /* give up */ }
+          }
+        }
+      }
     } catch (e) {
       console.warn("Failed to save Overpass cache", e);
     }
