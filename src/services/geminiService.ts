@@ -117,7 +117,10 @@ export class GeminiService {
     }
 
     // 0. Check Cache
-    const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
+    // Include a hash of the first 10 node IDs per pool so cached results are invalidated
+    // when the road network changes (e.g. user moves, cache expires, different fetch).
+    const nodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
+    const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage), nodePoolHash });
     if (this.cache.has(cacheKey)) {
       console.log("[DEBUG] Returning cached Gemini result");
       return this.cache.get(cacheKey)!;
@@ -338,9 +341,14 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
         return oldStage;
       });
 
+      const validMergedStages = mergedStages.filter(s => s.nodeIds && s.nodeIds.length > 0);
+      if (validMergedStages.length === 0) {
+        throw new Error("AI refinement produced no valid stages.");
+      }
+
       return {
         startNodeId: previousResult.startNodeId,
-        stages: mergedStages
+        stages: validMergedStages
       };
     } catch (e: any) {
       console.error("[DEBUG] Failed to parse Gemini refinement response:", text, e);

@@ -142,6 +142,7 @@ export default function App() {
     failingStages: [],
   });
   const lastGenerationTime = useRef<number>(0);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleStartRunFlow = async () => {
     if (!state.snappedCoords || state.snappedCoords.length === 0) return;
@@ -255,10 +256,15 @@ export default function App() {
       const baseRadiusMeters = Math.max(800, Math.round((distInKm / (2 * Math.PI)) * 1.3 * 1000));
 
       const timer = setTimeout(() => {
+        prefetchTimerRef.current = null;
         overpassService.fetchRoadNetwork(userLocation, baseRadiusMeters).catch(() => {});
       }, 2000);
+      prefetchTimerRef.current = timer;
 
-      return () => clearTimeout(timer);
+      return () => {
+        clearTimeout(timer);
+        prefetchTimerRef.current = null;
+      };
     }
   }, [userLocation, state.distance, state.unit, isAuthReady]);
 
@@ -283,6 +289,12 @@ export default function App() {
     if (now - lastGenerationTime.current < 5000) {
       setError("Please wait a few seconds before generating again.");
       return;
+    }
+
+    // Cancel any pending prefetch so it doesn't race with the real fetch
+    if (prefetchTimerRef.current !== null) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
     }
 
     setError(null);
@@ -398,6 +410,8 @@ export default function App() {
       let result: GeminiStagedResult | null = null;
       let fitness: RouteFitness | null = null;
       const maxAttempts = 2;
+      let bestRoutedPoints: { lat: number; lng: number }[] | null = null;
+      let bestFitness: RouteFitness | null = null;
 
       while (attempt <= maxAttempts) {
         setGenerationProgress(prev => ({ ...prev, attempt }));
@@ -473,6 +487,12 @@ export default function App() {
           failingStages: fitness?.failingStages?.map(s => s.stageNumber) || []
         }));
 
+        // Track best attempt across retries
+        if (!bestFitness || fitness.overallFitness > bestFitness.overallFitness) {
+          bestFitness = fitness;
+          bestRoutedPoints = routedPoints;
+        }
+
         if (fitness.passed) {
           updateState({
             isGenerating: false,
@@ -487,6 +507,22 @@ export default function App() {
           break;
         }
         attempt++;
+      }
+
+      // If no attempt passed the fitness threshold, still show the best result so the user
+      // isn't left with a blank map and no error.
+      if (!fitness?.passed && bestRoutedPoints && bestFitness) {
+        updateState({
+          isGenerating: false,
+          hasResult: true,
+          idealCoords: bestConfig.projectedPoints,
+          snappedCoords: bestRoutedPoints,
+          routeFidelity: bestFitness.overallFitness,
+          distance: validDist,
+          textInput: state.textInput,
+          nodeMap: network.nodeMap
+        }, true);
+        setGenerationError(`Route quality is lower than expected (${bestFitness.overallFitness}% match). Try regenerating for a better result.`);
       }
 
       lastGenerationTime.current = Date.now();

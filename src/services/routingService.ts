@@ -201,9 +201,14 @@ export class RoutingService {
       }
     }
 
-    return waypointArray.filter((node, i) => {
-      if (i === 0) return true;
-      return node.lat !== waypointArray[i-1].lat || node.lng !== waypointArray[i-1].lng;
+    // Deduplicate: remove any exact coordinate duplicates (not just consecutive ones)
+    // to prevent OSRM from routing A → B → A backtracks.
+    const seen = new Set<string>();
+    return waypointArray.filter(node => {
+      const key = `${node.lat},${node.lng}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
   }
 

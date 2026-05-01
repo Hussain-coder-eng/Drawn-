@@ -51,7 +51,7 @@ export class FitnessService {
         };
       }
       const stageNodes = (stage.nodeIds || [])
-        .map(id => nodeMap.get(id))
+        .map(id => nodeMap.get(String(id)))
         .filter((n): n is { lat: number; lng: number } => !!n);
 
       if (stageNodes.length < 2) {
@@ -87,9 +87,9 @@ export class FitnessService {
       };
     });
 
-    const overallFitness = Math.round(
-      stageScores.reduce((sum, s) => sum + s.overallStageScore, 0) / stageScores.length
-    );
+    const overallFitness = stageScores.length === 0
+      ? 0
+      : Math.round(stageScores.reduce((sum, s) => sum + s.overallStageScore, 0) / stageScores.length);
 
     return {
       overallFitness,

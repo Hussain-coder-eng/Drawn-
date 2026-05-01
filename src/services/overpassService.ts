@@ -199,12 +199,12 @@ export class OverpassService {
 
           // Abort all other in-flight requests (fetch is done for this mirror)
           controllers.forEach((c, cIdx) => { if (cIdx !== idx) c.abort(); });
+          // Clear global timeout now — we have the data, no point aborting remaining mirrors
+          clearTimeout(globalTimeout);
 
           onProgress?.("Processing map data in background...");
           const network = await this.processOSMDataWithWorker(data);
 
-          // Only clear global timeout after worker has fully resolved
-          clearTimeout(globalTimeout);
           this.cache.set(cacheKey, { network, timestamp: Date.now() });
           this.saveCache();
           return network;
