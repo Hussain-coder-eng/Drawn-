@@ -29,10 +29,11 @@ import {
 // Services and Libs
 import { RoutingService } from "./services/routingService";
 import { RateLimiter } from "./services/rateLimiter";
-import { GeminiService, GeminiStagedResult } from "./services/geminiService";
-import { OverpassService, OSMNode } from "./services/overpassService";
-import { FitnessService, RouteFitness } from "./services/fitnessService";
+import { GeminiService } from "./services/geminiService";
+import { OverpassService } from "./services/overpassService";
+import { FitnessService } from "./services/fitnessService";
 import { checkFeasibility } from "./services/feasibilityService";
+import { snapIdealPathToRoads } from "./services/nodeSnapService";
 import {
   SHAPE_SCRIPTS,
   getLetterScript,
@@ -59,14 +60,12 @@ import {
   NormalizedPoint,
   adaptiveSimplify,
   SHAPE_SIMPLIFICATION_CONFIG,
-  resamplePolylinePoints,
   projectShapeToLatLng,
 } from "./lib/shapeMath";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
 import { preprocessorService } from "./services/preprocessorService";
 import { composeWordPath } from "./lib/gpsFont";
-import { buildStageScript } from "./lib/stageService";
 import { findBestOrientation } from "./services/optimizationService";
 import { useNudgeInterface } from "./hooks/useNudgeInterface";
 import { NudgeMap } from "./components/NudgeMap";
@@ -77,8 +76,6 @@ import { NavRoute, preprocessRouteForNavigation } from "./lib/navigationService"
 // Global limiters
 const osrmLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60000 });
 
-/** Max vertices for AI stage script only (avoids hundreds of Gemini stages × huge prompts). */
-const MAX_AI_SCRIPT_POINTS = 41;
 const routingService = new RoutingService(import.meta.env.VITE_OPENROUTESERVICE_API_KEY);
 const geminiService = new GeminiService();
 const overpassService = new OverpassService();
@@ -377,201 +374,80 @@ export default function App() {
         state.mode
       );
 
-      // 4. Build Stage Script (dense shapes → many edges; cap polyline for AI/Gemini only)
-      const aiPathForStages =
-        bestConfig.projectedPoints.length <= MAX_AI_SCRIPT_POINTS
-          ? bestConfig.projectedPoints
-          : resamplePolylinePoints(bestConfig.projectedPoints, MAX_AI_SCRIPT_POINTS);
-
-      const stages = buildStageScript(
-        aiPathForStages.map(p => ({ x: p.lng, y: p.lat })),
-        distInKm
-      );
-      setCurrentScriptStages(stages.length);
-
       // 4b. Feasibility gate — bail early if road density is too low for this shape/location
       checkFeasibility(network, bestConfig.projectedPoints);
+      setCurrentScriptStages(0);
 
-      // 5. AI Node Selection (Gemini)
-      const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], network.edgeMap, 1)[0];
-      const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, network.edgeMap, 400);
+      // 5. Algorithmic snap routing — no AI required
+      setGenerationProgress({ attempt: 1, maxAttempts: 3, fitnessScore: null, failingStages: [] });
 
-      const totalIdealPoints = aiPathForStages;
-      let cumulativePct = 0;
-      const idealStagePaths: Point[][] = stages.map((stage) => {
-        const startFrac = cumulativePct / 100;
-        cumulativePct += stage.distancePct;
-        const endFrac = cumulativePct / 100;
-        const n = totalIdealPoints.length;
-        const startIdx = Math.floor(startFrac * (n - 1));
-        const endIdx = Math.min(Math.ceil(endFrac * (n - 1)), n - 1);
-        return totalIdealPoints.slice(startIdx, endIdx + 1);
-      });
-      const stageNodePools: OSMNode[][] = stages.map((_, i) =>
-        overpassService.getNodesForStage(sampledNodes, idealStagePaths[i], 400)
-      );
+      const WAYPOINT_COUNTS = [30, 45, 20] as const;
+      let bestFitness = 0;
+      let bestRoutedPoints: Point[] | null = null;
+      let bestSnappedWaypoints: Point[] | null = null;
 
-      let attempt = 1;
-      let result: GeminiStagedResult | null = null;
-      let fitness: RouteFitness | null = null;
-      const maxAttempts = 2;
-      let bestRoutedPoints: { lat: number; lng: number }[] | null = null;
-      let bestFitness: RouteFitness | null = null;
-      let bestResult: GeminiStagedResult | null = null;
-
-      while (attempt <= maxAttempts) {
-        setGenerationProgress(prev => ({ ...prev, attempt }));
-        setLoadingMessage(`Laying out your ${shapeLabel} — attempt ${attempt} of ${maxAttempts}...`);
-
-        const aiStages = stages.map(s => ({
-          stage: s.stageIndex + 1,
-          direction: s.compassLabel,
-          turn: s.turnType as any,
-          distancePct: s.distancePct,
-          description: `Move ${s.compassLabel}`
-        }));
-
-        setLoadingMessage("Selecting route nodes — contacting AI...");
-        if (attempt === 1) {
-          result = await geminiService.selectNodesStaged(
-            stageNodePools,
-            aiStages,
-            shapeLabel,
-            distInKm,
-            startNode.id,
-            bestConfig.projectedPoints,
-            idealStagePaths,
-            (msg) => setLoadingMessage(msg)
-          );
-        } else if (result && fitness) {
-          result = await geminiService.rerouteFailingStages(
-            result,
-            fitness,
-            stageNodePools,
-            aiStages,
-            idealStagePaths,
-            distInKm,
-            shapeLabel,
-            network.nodeMap,
-            (msg) => setLoadingMessage(msg)
-          );
-        }
-
-        if (!result || !result.stages) throw new Error("AI failed to generate a valid route structure.");
-
-        // Anchor quality guard: Gemini's selections failed the spatial check — retry without OSRM
-        if (result.anchorQualityFailed && attempt < maxAttempts) {
-          const allFailing = aiStages.map(s => ({
-            stageNumber: s.stage,
-            directionScore: 0,
-            distanceScore: 0,
-            progressionScore: 0,
-            overallStageScore: 0,
-            feedback: result!.anchorFeedback || 'Anchor spatial quality check failed.'
-          }));
-          fitness = {
-            overallFitness: 0,
-            stageScores: allFailing,
-            failingStages: allFailing,
-            passed: false
-          };
-          attempt++;
-          continue;
-        }
-
-        // 6. Anchor Point Locking (search only AI-relevant nodes — full nodeMap × all shape points freezes UI)
-        setLoadingMessage("Routing on real streets...");
-        const idealAnchors = bestConfig.projectedPoints.map((p, i) => ({ ...p, stageIndex: i }));
-        const lockedAnchors = routingService.lockAnchorPointsToNodes(
-          idealAnchors,
-          network.nodeMap,
-          sampledNodes
+      for (let attempt = 0; attempt < WAYPOINT_COUNTS.length; attempt++) {
+        setGenerationProgress(prev => ({ ...prev, attempt: attempt + 1 }));
+        setLoadingMessage(
+          attempt === 0
+            ? `Snapping ${shapeLabel} to roads...`
+            : `Refining route (pass ${attempt + 1} of 3)...`
         );
 
-        // 7. Route with Locked Waypoints
-        // Anchor the route to the user's start location: prepend and append the nearest
-        // OSM node to userLocation so the route always begins and ends where they are.
-        const waypointArray = routingService.buildOSRMWaypointArray(result.stages, lockedAnchors, network.nodeMap);
-        const startPoint = { lat: startNode.lat, lng: startNode.lng };
-        const anchoredWaypointArray = [startPoint, ...waypointArray, startPoint];
-        const routingResult = await routingService.routeWithLockedWaypoints(anchoredWaypointArray);
+        const snappedWaypoints = await snapIdealPathToRoads(
+          bestConfig.projectedPoints,
+          routingService,
+          WAYPOINT_COUNTS[attempt]
+        );
 
+        setLoadingMessage("Routing on real streets...");
+        const routingResult = await routingService.routeWithLockedWaypoints(snappedWaypoints);
         const routedPoints = routingResult.polylineCoords.map(c => ({ lat: c[1], lng: c[0] }));
 
-        const stageScore = fitnessService.scoreRoute(result.stages, aiStages, network.nodeMap, distInKm);
         const fidelityScore = fitnessService.scoreFidelity(routedPoints, state.mode, bestConfig.projectedPoints);
-        const overallFitness = Math.round((stageScore.overallFitness * 0.6) + (fidelityScore * 0.4));
-        fitness = {
-          ...stageScore,
-          overallFitness,
-          passed: overallFitness >= 70
-        };
 
         setGenerationProgress(prev => ({
           ...prev,
-          fitnessScore: fitness?.overallFitness || 0,
-          failingStages: fitness?.failingStages?.map(s => s.stageNumber) || []
+          fitnessScore: fidelityScore,
+          failingStages: [],
         }));
 
-        // Track best attempt across retries
-        if (!bestFitness || fitness.overallFitness > bestFitness.overallFitness) {
-          bestFitness = fitness;
+        if (fidelityScore > bestFitness) {
+          bestFitness = fidelityScore;
           bestRoutedPoints = routedPoints;
-          bestResult = result;
+          bestSnappedWaypoints = snappedWaypoints;
         }
 
-        if (fitness.passed) {
-          const debugInfo: DebugInfo = {
-            idealPath: bestConfig.projectedPoints,
-            anchorsByStage: (result?.stages ?? []).map(s => ({
-              stageNumber: s.stageNumber,
-              nodes: s.nodeIds
-                .map(id => network.nodeMap.get(String(id)))
-                .filter(Boolean)
-                .map(n => ({ lat: n!.lat, lng: n!.lng })),
-            })),
-          };
-          updateState({
-            isGenerating: false,
-            hasResult: true,
-            idealCoords: bestConfig.projectedPoints,
-            snappedCoords: routedPoints,
-            routeFidelity: fitness.overallFitness,
-            distance: validDist,
-            textInput: state.textInput,
-            nodeMap: network.nodeMap,
-            debugInfo,
-          }, true);
-          break;
-        }
-        attempt++;
+        if (fidelityScore >= 70) break;
+        if (attempt === 0 && fidelityScore >= 50) break;
+        if (attempt === 1 && fidelityScore >= 40) break;
       }
 
-      // If no attempt passed the fitness threshold, still show the best result so the user
-      // isn't left with a blank map and no error.
-      if (!fitness?.passed && bestRoutedPoints && bestFitness) {
-        const debugInfo: DebugInfo = {
-          idealPath: bestConfig.projectedPoints,
-          anchorsByStage: (bestResult?.stages ?? []).map(s => ({
-            stageNumber: s.stageNumber,
-            nodes: s.nodeIds
-              .map(id => network.nodeMap.get(String(id)))
-              .filter(Boolean)
-              .map(n => ({ lat: n!.lat, lng: n!.lng })),
-          })),
-        };
-        updateState({
-          isGenerating: false,
-          hasResult: true,
-          idealCoords: bestConfig.projectedPoints,
-          snappedCoords: bestRoutedPoints,
-          routeFidelity: bestFitness.overallFitness,
-          distance: validDist,
-          textInput: state.textInput,
-          nodeMap: network.nodeMap,
-          debugInfo,
-        }, true);
-        setGenerationError(`Route quality is lower than expected (${bestFitness.overallFitness}% match). Try regenerating for a better result.`);
+      if (!bestRoutedPoints) {
+        throw new Error("Failed to generate a route. Please try again.");
+      }
+
+      const debugInfo: DebugInfo = {
+        idealPath: bestConfig.projectedPoints,
+        snappedWaypoints: bestSnappedWaypoints ?? [],
+      };
+
+      updateState({
+        isGenerating: false,
+        hasResult: true,
+        idealCoords: bestConfig.projectedPoints,
+        snappedCoords: bestRoutedPoints,
+        routeFidelity: bestFitness,
+        distance: validDist,
+        textInput: state.textInput,
+        nodeMap: network.nodeMap,
+        debugInfo,
+      }, true);
+
+      if (bestFitness < 70) {
+        setGenerationError(
+          `Route quality is lower than expected (${bestFitness}% match). Try regenerating for a better result.`
+        );
       }
 
       lastGenerationTime.current = Date.now();
