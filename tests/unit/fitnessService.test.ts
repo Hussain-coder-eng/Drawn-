@@ -115,3 +115,30 @@ describe('FitnessService.scoreFidelity', () => {
     );
   });
 });
+
+describe('FitnessService.scoreFidelity — recalibrated Frechet formula', () => {
+  it('scores a route with ~256m max deviation > 0 (new ×200 formula allows it)', () => {
+    // calculateFrechetFidelity requires at least 2 points; single-point arrays short-circuit to 0
+    // 256m north ≈ 0.0023° latitude (1° ≈ 111.32km)
+    // With OLD formula (×500): 100 - 0.256 * 500 = -28 → clamped 0  (too strict)
+    // With NEW formula (×200): 100 - 0.256 * 200 =  49 → score 49   (correct)
+    const ideal: Point[] = [{ lat: 51.500, lng: -0.100 }, { lat: 51.5001, lng: -0.100 }];
+    const mid: Point[]   = [{ lat: 51.5023, lng: -0.100 }, { lat: 51.5024, lng: -0.100 }]; // ~256m north
+    const score = service.scoreFidelity(mid, 'premade', ideal);
+    expect(score).toBeGreaterThan(0);
+    expect(score).toBeLessThan(60);
+  });
+
+  it('scores a route with >500m max deviation as 0', () => {
+    // ~1.11km deviation — clamped to 0 by both old and new formula
+    const ideal: Point[]   = [{ lat: 51.500, lng: -0.100 }, { lat: 51.5001, lng: -0.100 }];
+    const veryFar: Point[] = [{ lat: 51.510, lng: -0.100 }, { lat: 51.5101, lng: -0.100 }]; // ~1.11km
+    const score = service.scoreFidelity(veryFar, 'premade', ideal);
+    expect(score).toBe(0);
+  });
+
+  it('scores a perfect match as 100', () => {
+    const pts: Point[] = [{ lat: 51.5, lng: -0.1 }, { lat: 51.51, lng: -0.09 }];
+    expect(service.scoreFidelity(pts, 'premade', pts)).toBe(100);
+  });
+});

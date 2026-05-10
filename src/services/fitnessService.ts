@@ -119,7 +119,7 @@ export class FitnessService {
       if (minDist > maxDev) maxDev = minDist;
     });
 
-    const score = Math.max(0, 100 - (maxDev * 500)); // 200m deviation = 0 score
+    const score = Math.max(0, 100 - (maxDev * 200)); // 500m deviation = 0 score
     return Math.round(score);
   }
 
