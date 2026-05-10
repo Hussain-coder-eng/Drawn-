@@ -12,7 +12,6 @@ import {
   computeBboxDiagonal,
   isClosedShape,
 } from '../../src/lib/shapeMath';
-import { InputMode } from '../../src/types';
 
 describe('shape generators produce normalized [0, 1] points', () => {
   const generators: Array<{ name: string; fn: () => NormalizedPoint[] }> = [

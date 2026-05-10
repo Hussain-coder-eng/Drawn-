@@ -1,4 +1,5 @@
 import * as turf from "@turf/turf";
+import type { InputMode } from "../types";
 
 export interface Point {
   lat: number;
@@ -312,10 +313,8 @@ export function generateSquare(center: Point, distanceKm: number): Point[] {
   return scaleAndCenter(points.map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
 }
 
-type InputModeLocal = 'shapes' | 'text' | 'draw';
-
 export function isClosedShape(
-  mode: InputModeLocal,
+  mode: InputMode,
   selectedShape: string | null,
   normalizedDrawnPath: NormalizedPoint[]
 ): boolean {
