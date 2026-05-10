@@ -23,4 +23,5 @@ export interface DrawnState {
   normalizedDrawnPath: { x: number; y: number }[];
   nodeMap?: Map<string, Point>;
   debugInfo?: DebugInfo | null;
+  returnToStart: boolean;
 }

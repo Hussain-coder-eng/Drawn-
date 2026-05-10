@@ -19,6 +19,8 @@ interface DesignInputProps {
   setNormalizedDrawnPath: (path: NormalizedPoint[]) => void;
   expanded: boolean;
   onModeSelect: (mode: InputMode) => void;
+  returnToStart: boolean;
+  onReturnToStartChange: (v: boolean) => void;
 }
 
 export default function DesignInput({
@@ -32,6 +34,8 @@ export default function DesignInput({
   setNormalizedDrawnPath,
   expanded,
   onModeSelect,
+  returnToStart,
+  onReturnToStartChange,
 }: DesignInputProps) {
   const handleShapeComplete = (points: NormalizedPoint[]) => {
     setNormalizedDrawnPath(points);
@@ -119,10 +123,33 @@ export default function DesignInput({
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
                   maxLength={20}
-                placeholder="Type a word or name…"
+                  placeholder="Type a word or name…"
                   className="w-full h-[52px] bg-bg-card border border-divider rounded-[10px] pl-12 pr-4 text-[15px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
                 />
               </div>
+              <button
+                data-testid="return-to-start-toggle"
+                onClick={() => onReturnToStartChange(!returnToStart)}
+                className={cn(
+                  "flex items-center gap-2.5 px-3 py-2 rounded-[10px] border w-full transition-colors",
+                  returnToStart
+                    ? "border-accent-primary/50 bg-accent-primary/10"
+                    : "border-divider bg-bg-card hover:border-accent-primary/30"
+                )}
+              >
+                <div className={cn(
+                  "w-8 h-4 rounded-full transition-colors relative shrink-0",
+                  returnToStart ? "bg-accent-primary" : "bg-text-muted"
+                )}>
+                  <div className={cn(
+                    "absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform",
+                    returnToStart ? "left-0.5 translate-x-4" : "left-0.5 translate-x-0"
+                  )} />
+                </div>
+                <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
+                  Return to start
+                </span>
+              </button>
             </div>
           )}
 
@@ -135,6 +162,29 @@ export default function DesignInput({
                   <span data-point-count={drawnPath.length} className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Captured</span>
                 </div>
               )}
+              <button
+                data-testid="return-to-start-toggle"
+                onClick={() => onReturnToStartChange(!returnToStart)}
+                className={cn(
+                  "flex items-center gap-2.5 px-3 py-2 rounded-[10px] border w-full transition-colors",
+                  returnToStart
+                    ? "border-accent-primary/50 bg-accent-primary/10"
+                    : "border-divider bg-bg-card hover:border-accent-primary/30"
+                )}
+              >
+                <div className={cn(
+                  "w-8 h-4 rounded-full transition-colors relative shrink-0",
+                  returnToStart ? "bg-accent-primary" : "bg-text-muted"
+                )}>
+                  <div className={cn(
+                    "absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform",
+                    returnToStart ? "left-0.5 translate-x-4" : "left-0.5 translate-x-0"
+                  )} />
+                </div>
+                <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
+                  Return to start
+                </span>
+              </button>
             </div>
           )}
         </motion.div>
