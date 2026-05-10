@@ -8,7 +8,7 @@ import RouteSettings from "./components/RouteSettings";
 import ResultCard from "./components/ResultCard";
 import MapComponent from "./components/MapComponent";
 import GenerationProgress from "./components/GenerationProgress";
-import { InputMode, DrawnState } from "./types";
+import { InputMode, DrawnState, DebugInfo } from "./types";
 import { SHAPES } from "./constants";
 
 // Firebase imports
@@ -114,6 +114,7 @@ export default function App() {
     nodeMap: new Map(),
   });
   const [isNudging, setIsNudging] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
 
   const [history, setHistory] = useState<DrawnState[]>([]);
   const [redoStack, setRedoStack] = useState<DrawnState[]>([]);
@@ -416,6 +417,7 @@ export default function App() {
       const maxAttempts = 2;
       let bestRoutedPoints: { lat: number; lng: number }[] | null = null;
       let bestFitness: RouteFitness | null = null;
+      let bestResult: GeminiStagedResult | null = null;
 
       while (attempt <= maxAttempts) {
         setGenerationProgress(prev => ({ ...prev, attempt }));
@@ -515,9 +517,20 @@ export default function App() {
         if (!bestFitness || fitness.overallFitness > bestFitness.overallFitness) {
           bestFitness = fitness;
           bestRoutedPoints = routedPoints;
+          bestResult = result;
         }
 
         if (fitness.passed) {
+          const debugInfo: DebugInfo = {
+            idealPath: bestConfig.projectedPoints,
+            anchorsByStage: (result?.stages ?? []).map(s => ({
+              stageNumber: s.stageNumber,
+              nodes: s.nodeIds
+                .map(id => network.nodeMap.get(String(id)))
+                .filter(Boolean)
+                .map(n => ({ lat: n!.lat, lng: n!.lng })),
+            })),
+          };
           updateState({
             isGenerating: false,
             hasResult: true,
@@ -526,7 +539,8 @@ export default function App() {
             routeFidelity: fitness.overallFitness,
             distance: validDist,
             textInput: state.textInput,
-            nodeMap: network.nodeMap
+            nodeMap: network.nodeMap,
+            debugInfo,
           }, true);
           break;
         }
@@ -536,6 +550,16 @@ export default function App() {
       // If no attempt passed the fitness threshold, still show the best result so the user
       // isn't left with a blank map and no error.
       if (!fitness?.passed && bestRoutedPoints && bestFitness) {
+        const debugInfo: DebugInfo = {
+          idealPath: bestConfig.projectedPoints,
+          anchorsByStage: (bestResult?.stages ?? []).map(s => ({
+            stageNumber: s.stageNumber,
+            nodes: s.nodeIds
+              .map(id => network.nodeMap.get(String(id)))
+              .filter(Boolean)
+              .map(n => ({ lat: n!.lat, lng: n!.lng })),
+          })),
+        };
         updateState({
           isGenerating: false,
           hasResult: true,
@@ -544,7 +568,8 @@ export default function App() {
           routeFidelity: bestFitness.overallFitness,
           distance: validDist,
           textInput: state.textInput,
-          nodeMap: network.nodeMap
+          nodeMap: network.nodeMap,
+          debugInfo,
         }, true);
         setGenerationError(`Route quality is lower than expected (${bestFitness.overallFitness}% match). Try regenerating for a better result.`);
       }
@@ -733,6 +758,9 @@ export default function App() {
           isGenerating={state.isGenerating}
           hasResult={state.hasResult}
           center={userLocation}
+          debugInfo={state.debugInfo}
+          showDebug={showDebug}
+          onToggleDebug={() => setShowDebug(v => !v)}
         />
       </div>
 

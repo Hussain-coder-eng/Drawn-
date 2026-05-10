@@ -1,8 +1,8 @@
-import { MapContainer, TileLayer, Polyline, Marker, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, Marker, CircleMarker, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { cn } from "@/src/lib/utils";
-import { InputMode } from "@/src/types";
+import { InputMode, DebugInfo } from "@/src/types";
 import { Maximize, ZoomIn, ZoomOut, Navigation } from "lucide-react";
 import { Point } from "@/src/lib/shapeMath";
 
@@ -17,6 +17,11 @@ const pulsingIcon = L.divIcon({
   iconAnchor: [0, 0],
 });
 
+const DEBUG_STAGE_COLORS = [
+  '#ef4444', '#f97316', '#eab308', '#22c55e',
+  '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6',
+];
+
 interface MapComponentProps {
   mode: InputMode;
   idealCoords: Point[];
@@ -24,6 +29,9 @@ interface MapComponentProps {
   isGenerating: boolean;
   hasResult: boolean;
   center: Point;
+  debugInfo?: DebugInfo | null;
+  showDebug?: boolean;
+  onToggleDebug?: () => void;
 }
 
 // Component to handle map view updates
@@ -75,6 +83,9 @@ export default function MapComponent({
   isGenerating,
   hasResult,
   center,
+  debugInfo,
+  showDebug = false,
+  onToggleDebug,
 }: MapComponentProps) {
   const [zoom, setZoom] = useState(13);
   const [recenterTrigger, setRecenterTrigger] = useState(0);
@@ -136,10 +147,44 @@ export default function MapComponent({
               }}
             />
             {/* Start/Finish Pulsing Dot */}
-            <Marker 
+            <Marker
               position={leafletSnapped[0]}
               icon={pulsingIcon}
             />
+          </>
+        )}
+
+        {/* Debug Overlay */}
+        {showDebug && debugInfo && (
+          <>
+            {/* Ideal path — blue dashed polyline */}
+            {debugInfo.idealPath.length > 1 && (
+              <Polyline
+                positions={debugInfo.idealPath.map(p => [p.lat, p.lng] as [number, number])}
+                pathOptions={{
+                  color: '#3b82f6',
+                  weight: 2,
+                  opacity: 0.6,
+                  dashArray: '4 4',
+                }}
+              />
+            )}
+            {/* Gemini anchor nodes — colored circles per stage */}
+            {debugInfo.anchorsByStage.map((stage, stageIdx) => {
+              const color = DEBUG_STAGE_COLORS[stageIdx % DEBUG_STAGE_COLORS.length];
+              return stage.nodes.map((node, nodeIdx) => (
+                <CircleMarker
+                  key={`debug-s${stage.stageNumber}-n${nodeIdx}`}
+                  center={[node.lat, node.lng]}
+                  radius={6}
+                  pathOptions={{ color, fillColor: color, fillOpacity: 0.8, weight: 1.5 }}
+                >
+                  <Tooltip direction="top" offset={[0, -8]} opacity={0.9}>
+                    Stage {stage.stageNumber}
+                  </Tooltip>
+                </CircleMarker>
+              ));
+            })}
           </>
         )}
       </MapContainer>
@@ -147,13 +192,13 @@ export default function MapComponent({
       {/* Floating Controls */}
       <div className="absolute top-6 right-6 z-[1000] flex flex-col gap-2">
         <div className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] overflow-hidden shadow-2xl">
-          <button 
+          <button
             onClick={() => setZoom(z => z + 1)}
             className="p-3 hover:bg-white/5 text-white transition-colors border-b border-divider"
           >
             <ZoomIn className="w-5 h-5" />
           </button>
-          <button 
+          <button
             onClick={() => setZoom(z => z - 1)}
             className="p-3 hover:bg-white/5 text-white transition-colors"
           >
@@ -166,6 +211,20 @@ export default function MapComponent({
         >
           <Navigation className="w-5 h-5" />
         </button>
+        {onToggleDebug && (
+          <button
+            onClick={onToggleDebug}
+            title="Toggle debug overlay"
+            className={cn(
+              "bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] px-3 py-2 shadow-2xl text-[11px] font-mono font-semibold uppercase tracking-wider transition-colors",
+              showDebug
+                ? "text-blue-400 border-blue-500/50 bg-blue-900/30"
+                : "text-text-secondary hover:bg-white/5 hover:text-white"
+            )}
+          >
+            Debug
+          </button>
+        )}
       </div>
 
       {/* Bottom Right Info */}

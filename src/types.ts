@@ -2,6 +2,11 @@ import { Point } from "./lib/shapeMath";
 
 export type InputMode = "shapes" | "text" | "draw";
 
+export interface DebugInfo {
+  idealPath: Array<{ lat: number; lng: number }>;
+  anchorsByStage: Array<{ stageNumber: number; nodes: Array<{ lat: number; lng: number }> }>;
+}
+
 export interface DrawnState {
   mode: InputMode;
   selectedShape: string | null;
@@ -17,4 +22,5 @@ export interface DrawnState {
   drawnPath: Point[];
   normalizedDrawnPath: { x: number; y: number }[];
   nodeMap?: Map<string, Point>;
+  debugInfo?: DebugInfo | null;
 }
