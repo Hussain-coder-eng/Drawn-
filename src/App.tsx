@@ -32,6 +32,7 @@ import { RateLimiter } from "./services/rateLimiter";
 import { GeminiService, GeminiStagedResult } from "./services/geminiService";
 import { OverpassService, OSMNode } from "./services/overpassService";
 import { FitnessService, RouteFitness } from "./services/fitnessService";
+import { checkFeasibility } from "./services/feasibilityService";
 import {
   SHAPE_SCRIPTS,
   getLetterScript,
@@ -387,6 +388,9 @@ export default function App() {
       );
       setCurrentScriptStages(stages.length);
 
+      // 4b. Feasibility gate — bail early if road density is too low for this shape/location
+      checkFeasibility(network, bestConfig.projectedPoints);
+
       // 5. AI Node Selection (Gemini)
       const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], network.edgeMap, 1)[0];
       const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, network.edgeMap, 400);
@@ -452,6 +456,26 @@ export default function App() {
         }
 
         if (!result || !result.stages) throw new Error("AI failed to generate a valid route structure.");
+
+        // Anchor quality guard: Gemini's selections failed the spatial check — retry without OSRM
+        if (result.anchorQualityFailed && attempt < maxAttempts) {
+          const allFailing = aiStages.map(s => ({
+            stageNumber: s.stage,
+            directionScore: 0,
+            distanceScore: 0,
+            progressionScore: 0,
+            overallStageScore: 0,
+            feedback: result!.anchorFeedback || 'Anchor spatial quality check failed.'
+          }));
+          fitness = {
+            overallFitness: 0,
+            stageScores: allFailing,
+            failingStages: allFailing,
+            passed: false
+          };
+          attempt++;
+          continue;
+        }
 
         // 6. Anchor Point Locking (search only AI-relevant nodes — full nodeMap × all shape points freezes UI)
         setLoadingMessage("Routing on real streets...");
