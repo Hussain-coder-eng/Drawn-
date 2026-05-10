@@ -9,6 +9,7 @@ import {
   scaleShape,
   projectShapeToLatLng,
   NormalizedPoint,
+  computeBboxDiagonal,
 } from '../../src/lib/shapeMath';
 
 describe('shape generators produce normalized [0, 1] points', () => {
@@ -103,5 +104,25 @@ describe('projectShapeToLatLng', () => {
       expect(p.lng).toBeGreaterThan(-180);
       expect(p.lng).toBeLessThan(180);
     }
+  });
+});
+
+describe('computeBboxDiagonal', () => {
+  it('returns 0 for fewer than 2 points', () => {
+    expect(computeBboxDiagonal([])).toBe(0);
+    expect(computeBboxDiagonal([{ lat: 0, lng: 0 }])).toBe(0);
+  });
+
+  it('returns approximate diagonal for a degree-scale rectangle', () => {
+    // 1° lat × 1° lng at equator → diagonal ≈ 157km
+    const pts = [{ lat: 0, lng: 0 }, { lat: 1, lng: 1 }];
+    const d = computeBboxDiagonal(pts);
+    expect(d).toBeGreaterThan(100);
+    expect(d).toBeLessThan(200);
+  });
+
+  it('returns non-zero for a projected heart shape', () => {
+    const pts = projectShapeToLatLng(generateNormalizedHeart(), 51.5, -0.1, 2);
+    expect(computeBboxDiagonal(pts)).toBeGreaterThan(0);
   });
 });

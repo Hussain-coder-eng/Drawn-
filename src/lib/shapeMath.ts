@@ -296,6 +296,15 @@ export function generateLightning(center: Point, distanceKm: number): Point[] {
   return scaleAndCenter(generateNormalizedLightning().map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
 }
 
+export function computeBboxDiagonal(points: Point[]): number {
+  if (points.length < 2) return 0;
+  const lats = points.map(p => p.lat);
+  const lngs = points.map(p => p.lng);
+  const sw = turf.point([Math.min(...lngs), Math.min(...lats)]);
+  const ne = turf.point([Math.max(...lngs), Math.max(...lats)]);
+  return turf.distance(sw, ne, { units: 'kilometers' });
+}
+
 export function generateSquare(center: Point, distanceKm: number): Point[] {
   const points = [
     { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0, y: 0 }
