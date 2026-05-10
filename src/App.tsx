@@ -387,6 +387,7 @@ export default function App() {
 
       let forcedAnchor: Point | undefined;
       if (closed) {
+        // batchSnap falls back to raw GPS if OSRM is unreachable; OSRM will re-snap during routing
         const [startOnRoad] = await routingService.batchSnap([userLocation]);
         forcedAnchor = startOnRoad;
       }
