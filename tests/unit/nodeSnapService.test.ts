@@ -80,3 +80,44 @@ describe('snapIdealPathToRoads', () => {
     expect(result).toEqual(single);
   });
 });
+
+describe('snapIdealPathToRoads — forcedAnchor', () => {
+  it('uses forcedAnchor as first and last waypoint', async () => {
+    const anchor: Point = { lat: 51.5, lng: -0.1 };
+    const rs = makeRS(pts => pts); // identity snap
+    const result = await snapIdealPathToRoads(circlePoints(), rs, 10, anchor);
+    expect(result[0]).toEqual(anchor);
+    expect(result[result.length - 1]).toEqual(anchor);
+  });
+
+  it('result length is at most targetWaypoints + 1 with forcedAnchor', async () => {
+    const anchor: Point = { lat: 51.5, lng: -0.1 };
+    const rs = makeRS(pts => pts);
+    const result = await snapIdealPathToRoads(circlePoints(), rs, 20, anchor);
+    expect(result.length).toBeLessThanOrEqual(21);
+    expect(result.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('rotates ideal path so nearest point to anchor becomes first sample', async () => {
+    // Straight east-west line: anchor is at the eastern end
+    const anchor: Point = { lat: 51.5, lng: 0.1 }; // eastern point
+    const line: Point[] = [
+      { lat: 51.5, lng: -0.1 }, // western (index 0 originally)
+      { lat: 51.5, lng:  0.0 }, // middle
+      { lat: 51.5, lng:  0.1 }, // eastern — closest to anchor
+      { lat: 51.5, lng:  0.0 }, // middle
+      { lat: 51.5, lng: -0.1 }, // western
+    ];
+    // The batchSnap mock records all calls so we can inspect the sampled order
+    const sampledLngs: number[] = [];
+    const rs: RoutingService = {
+      batchSnap: vi.fn(async (pts: Point[]) => {
+        pts.forEach(p => sampledLngs.push(p.lng));
+        return pts;
+      }),
+    } as unknown as RoutingService;
+    await snapIdealPathToRoads(line, rs, 4, anchor);
+    // First sampled interior point should be near the eastern side (lng >= 0)
+    expect(sampledLngs[0]).toBeGreaterThanOrEqual(0);
+  });
+});

@@ -21,9 +21,55 @@ const MIN_WAYPOINTS = 4;
 export async function snapIdealPathToRoads(
   idealPath: Point[],
   routingService: RoutingService,
-  targetWaypoints = 30
+  targetWaypoints = 30,
+  forcedAnchor?: Point
 ): Promise<Point[]> {
   if (idealPath.length < 2) return idealPath;
+
+  // Forced-anchor path: start and end at a specific on-road point
+  if (forcedAnchor) {
+    const rotated = rotateToNearest(idealPath, forcedAnchor);
+    const innerPath = rotated.slice(1, rotated.length - 1);
+    if (innerPath.length < 2) return [forcedAnchor, forcedAnchor];
+
+    const innerLine = turf.lineString(innerPath.map(p => [p.lng, p.lat]));
+    const innerKm = turf.length(innerLine, { units: 'kilometers' });
+    const middleCount = Math.max(2, targetWaypoints - 2);
+    const middleSamples: Point[] = [];
+
+    for (let i = 0; i < middleCount; i++) {
+      const frac = i / (middleCount - 1);
+      try {
+        const pt = turf.along(innerLine, frac * innerKm, { units: 'kilometers' });
+        middleSamples.push({ lat: pt.geometry.coordinates[1], lng: pt.geometry.coordinates[0] });
+      } catch {
+        middleSamples.push(innerPath[innerPath.length - 1]);
+      }
+    }
+
+    const middleSnapped: Point[] = [];
+    for (let i = 0; i < middleSamples.length; i += SNAP_BATCH_SIZE) {
+      const batch = middleSamples.slice(i, i + SNAP_BATCH_SIZE);
+      middleSnapped.push(...await routingService.batchSnap(batch));
+      if (i + SNAP_BATCH_SIZE < middleSamples.length) {
+        await new Promise<void>(r => setTimeout(r, 100));
+      }
+    }
+
+    const assembled = [forcedAnchor, ...middleSnapped, forcedAnchor];
+
+    const deduped: Point[] = [];
+    for (const pt of assembled) {
+      const prev = deduped[deduped.length - 1];
+      if (!prev || prev.lat !== pt.lat || prev.lng !== pt.lng) deduped.push(pt);
+    }
+
+    const filtered = applyDirectionFilter(
+      deduped,
+      [forcedAnchor, ...middleSamples, forcedAnchor]
+    );
+    return filtered.length >= MIN_WAYPOINTS ? filtered : deduped;
+  }
 
   // Step 1: sparse arc-length sampling
   const line = turf.lineString(idealPath.map(p => [p.lng, p.lat]));
@@ -127,4 +173,20 @@ function closeLoop(waypoints: Point[]): Point[] {
     { units: "meters" }
   );
   return gapM > 50 ? [...waypoints, first] : waypoints;
+}
+
+/** Rotates a closed-loop path so the point nearest to `anchor` becomes index 0. */
+function rotateToNearest(path: Point[], anchor: Point): Point[] {
+  if (path.length < 2) return path;
+  let closestIdx = 0;
+  let minDist = Infinity;
+  for (let i = 0; i < path.length; i++) {
+    const d = turf.distance(
+      turf.point([anchor.lng, anchor.lat]),
+      turf.point([path[i].lng, path[i].lat]),
+      { units: 'meters' }
+    );
+    if (d < minDist) { minDist = d; closestIdx = i; }
+  }
+  return [...path.slice(closestIdx), ...path.slice(0, closestIdx)];
 }
