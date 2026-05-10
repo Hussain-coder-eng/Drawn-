@@ -61,6 +61,7 @@ import {
   adaptiveSimplify,
   SHAPE_SIMPLIFICATION_CONFIG,
   projectShapeToLatLng,
+  isClosedShape,
 } from "./lib/shapeMath";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
@@ -379,6 +380,17 @@ export default function App() {
       checkFeasibility(network, bestConfig.projectedPoints);
       setCurrentScriptStages(0);
 
+      // Determine anchor for closed-loop shapes
+      const closed =
+        isClosedShape(state.mode, state.selectedShape, state.normalizedDrawnPath) ||
+        state.returnToStart;
+
+      let forcedAnchor: Point | undefined;
+      if (closed) {
+        const [startOnRoad] = await routingService.batchSnap([userLocation]);
+        forcedAnchor = startOnRoad;
+      }
+
       // 5. Algorithmic snap routing — no AI required
       setGenerationProgress({ attempt: 1, maxAttempts: 3, fitnessScore: null, failingStages: [] });
 
@@ -398,7 +410,8 @@ export default function App() {
         const snappedWaypoints = await snapIdealPathToRoads(
           bestConfig.projectedPoints,
           routingService,
-          WAYPOINT_COUNTS[attempt]
+          WAYPOINT_COUNTS[attempt],
+          forcedAnchor
         );
 
         setLoadingMessage("Routing on real streets...");
@@ -582,7 +595,7 @@ export default function App() {
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
         expanded={sheetExpanded}
         onModeSelect={(mode) => {
-          updateState({ mode, hasResult: false });
+          updateState({ mode, hasResult: false, returnToStart: false });
           setSheetExpanded(true);
         }}
         returnToStart={state.returnToStart}
