@@ -279,7 +279,7 @@ Preferred start node ID: ${aiStartNodeIndex}
       if (allAnchorNodes.length >= 2 && idealPath.length >= 2) {
         const bboxDiagonal = computeBboxDiagonal(idealPath);
         const frechetKm = this.computeAnchorFrechetKm(allAnchorNodes, idealPath);
-        if (bboxDiagonal > 0 && frechetKm / bboxDiagonal > 0.40) {
+        if (bboxDiagonal > 0 && frechetKm / bboxDiagonal > 0.15) {
           finalResult.anchorQualityFailed = true;
           finalResult.anchorFeedback = this.computeAnchorFeedback(allAnchorNodes, idealPath);
         }
@@ -334,7 +334,7 @@ Preferred start node ID: ${aiStartNodeIndex}
       const idealSubPath = idealStagePaths[stageIdx] || [];
       const targetDist = stageDistances[stageIdx]?.targetDistanceKm;
       const deviation = this.computeStageSpatialDeviation(s, previousResult, idealSubPath, nodeMap);
-      const idealSubStr = this.samplePoints(idealSubPath, 3)
+      const idealSubStr = this.samplePoints(idealSubPath, 15)
         .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
       const nodesStr = pool
