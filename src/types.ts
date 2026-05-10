@@ -4,7 +4,7 @@ export type InputMode = "shapes" | "text" | "draw";
 
 export interface DebugInfo {
   idealPath: Array<{ lat: number; lng: number }>;
-  anchorsByStage: Array<{ stageNumber: number; nodes: Array<{ lat: number; lng: number }> }>;
+  snappedWaypoints: Array<{ lat: number; lng: number }>;
 }
 
 export interface DrawnState {

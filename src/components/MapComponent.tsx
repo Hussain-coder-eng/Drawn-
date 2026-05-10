@@ -17,10 +17,6 @@ const pulsingIcon = L.divIcon({
   iconAnchor: [0, 0],
 });
 
-const DEBUG_STAGE_COLORS = [
-  '#ef4444', '#f97316', '#eab308', '#22c55e',
-  '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6',
-];
 
 interface MapComponentProps {
   mode: InputMode;
@@ -169,22 +165,19 @@ export default function MapComponent({
                 }}
               />
             )}
-            {/* Gemini anchor nodes — colored circles per stage */}
-            {debugInfo.anchorsByStage.map((stage, stageIdx) => {
-              const color = DEBUG_STAGE_COLORS[stageIdx % DEBUG_STAGE_COLORS.length];
-              return stage.nodes.map((node, nodeIdx) => (
-                <CircleMarker
-                  key={`debug-s${stage.stageNumber}-n${nodeIdx}`}
-                  center={[node.lat, node.lng]}
-                  radius={6}
-                  pathOptions={{ color, fillColor: color, fillOpacity: 0.8, weight: 1.5 }}
-                >
-                  <Tooltip direction="top" offset={[0, -8]} opacity={0.9}>
-                    Stage {stage.stageNumber}
-                  </Tooltip>
-                </CircleMarker>
-              ));
-            })}
+            {/* Snapped waypoints — flat orange circles */}
+            {debugInfo.snappedWaypoints.map((node, idx) => (
+              <CircleMarker
+                key={`debug-snap-${idx}`}
+                center={[node.lat, node.lng]}
+                radius={6}
+                pathOptions={{ color: '#f97316', fillColor: '#f97316', fillOpacity: 0.9, weight: 1.5 }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} opacity={0.9}>
+                  Waypoint {idx + 1}
+                </Tooltip>
+              </CircleMarker>
+            ))}
           </>
         )}
       </MapContainer>
