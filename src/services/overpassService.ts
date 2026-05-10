@@ -355,18 +355,16 @@ export class OverpassService {
 
     if (inBounds.length >= 8) return inBounds;
 
-    // Fallback: 20 nearest nodes to stage midpoint
-    const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-    const midLng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
-    const midPt = turf.point([midLng, midLat]);
+    // Fallback: 20 nearest nodes to stage PATH (distributes across full arc)
+    const stageLine = turf.lineString(validPath.map(p => [p.lng, p.lat]));
 
     return [...allNodes]
       .filter(n =>
         typeof n.lat === 'number' && typeof n.lng === 'number' && !isNaN(n.lat) && !isNaN(n.lng)
       )
       .sort((a, b) =>
-        turf.distance(midPt, turf.point([a.lng, a.lat])) -
-        turf.distance(midPt, turf.point([b.lng, b.lat]))
+        turf.pointToLineDistance(turf.point([a.lng, a.lat]), stageLine, { units: 'meters' }) -
+        turf.pointToLineDistance(turf.point([b.lng, b.lat]), stageLine, { units: 'meters' })
       )
       .slice(0, 20);
   }

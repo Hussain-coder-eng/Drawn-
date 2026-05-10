@@ -47,3 +47,36 @@ describe('getNodesForStage', () => {
     expect(Array.isArray(result)).toBe(true);
   });
 });
+
+describe('getNodesForStage fallback sort — path distance not midpoint distance', () => {
+  it('fallback returns nodes closest to the stage PATH, not the stage midpoint', () => {
+    // Stage path runs diagonally: SW → NE
+    const stagePath: Point[] = [
+      { lat: 51.50, lng: -0.10 },
+      { lat: 51.52, lng: -0.08 },
+    ];
+    // Node near path start (far from midpoint)
+    const nearStart: OSMNode = makeNode(200, 51.500, -0.100);
+    // Node near path end (far from midpoint)
+    const nearEnd: OSMNode = makeNode(201, 51.520, -0.080);
+    // Node near midpoint but off to the side (NOT close to the path line)
+    const nearMidpointOffPath: OSMNode = makeNode(202, 51.51, -0.15);
+
+    // Use 1m buffer → nothing in bounds → forces fallback
+    const result = service.getNodesForStage(
+      [nearStart, nearEnd, nearMidpointOffPath],
+      stagePath,
+      1
+    );
+
+    const ids = result.map(n => n.id);
+    const idxNearStart = ids.indexOf(200);
+    const idxNearEnd = ids.indexOf(201);
+    const idxOffPath = ids.indexOf(202);
+
+    expect(idxNearStart).toBeGreaterThanOrEqual(0);
+    expect(idxNearEnd).toBeGreaterThanOrEqual(0);
+    // Off-path node must rank after the on-path nodes
+    expect(idxOffPath).toBeGreaterThan(Math.max(idxNearStart, idxNearEnd));
+  });
+});
