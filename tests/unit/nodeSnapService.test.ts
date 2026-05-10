@@ -98,17 +98,17 @@ describe('snapIdealPathToRoads — forcedAnchor', () => {
     expect(result.length).toBeGreaterThanOrEqual(4);
   });
 
-  it('rotates ideal path so nearest point to anchor becomes first sample', async () => {
-    // Straight east-west line: anchor is at the eastern end
-    const anchor: Point = { lat: 51.5, lng: 0.1 }; // eastern point
-    const line: Point[] = [
-      { lat: 51.5, lng: -0.1 }, // western (index 0 originally)
-      { lat: 51.5, lng:  0.0 }, // middle
-      { lat: 51.5, lng:  0.1 }, // eastern — closest to anchor
-      { lat: 51.5, lng:  0.0 }, // middle
-      { lat: 51.5, lng: -0.1 }, // western
-    ];
-    // The batchSnap mock records all calls so we can inspect the sampled order
+  it('rotates ideal path so nearest point to anchor becomes first interior sample', async () => {
+    // Circle where index 0 is the WESTERN tip and index 6 is the EASTERN tip
+    // Anchor placed at the eastern tip → rotateToNearest should make circle[6] index 0
+    // After rotation, innerPath[0] = circle[7] (eastern-ish, lng > 0)
+    // Without rotation, innerPath[0] = circle[1] (western-ish, lng < 0)
+    const circle: Point[] = Array.from({ length: 12 }, (_, i) => {
+      const t = (i / 12) * Math.PI * 2;
+      return { lat: 51.5 + 0.04 * Math.sin(t), lng: -0.07 * Math.cos(t) };
+    });
+    const anchor: Point = { lat: 51.5, lng: 0.07 }; // eastern tip
+
     const sampledLngs: number[] = [];
     const rs: RoutingService = {
       batchSnap: vi.fn(async (pts: Point[]) => {
@@ -116,8 +116,11 @@ describe('snapIdealPathToRoads — forcedAnchor', () => {
         return pts;
       }),
     } as unknown as RoutingService;
-    await snapIdealPathToRoads(line, rs, 4, anchor);
-    // First sampled interior point should be near the eastern side (lng >= 0)
-    expect(sampledLngs[0]).toBeGreaterThanOrEqual(0);
+
+    await snapIdealPathToRoads(circle, rs, 6, anchor);
+
+    // With correct rotation: first interior sample is from the eastern half (lng > 0)
+    // Without rotation: first interior sample is from the western half (lng < 0)
+    expect(sampledLngs[0]).toBeGreaterThan(0);
   });
 });
