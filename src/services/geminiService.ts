@@ -1,7 +1,7 @@
 import * as turf from "@turf/turf";
 import { jsonrepair } from "jsonrepair";
 import { addDoc, collection, onSnapshot, serverTimestamp } from "firebase/firestore";
-import { Point } from "../lib/shapeMath";
+import { Point, computeBboxDiagonal } from "../lib/shapeMath";
 import { OSMNode } from "./overpassService";
 import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness, StageScore } from "./fitnessService";
@@ -10,6 +10,8 @@ import { auth, db } from "../firebase";
 export interface GeminiStagedResult {
   startNodeId: number;
   stages: { stageNumber: number; nodeIds: number[] }[];
+  anchorQualityFailed?: boolean;
+  anchorFeedback?: string;
 }
 
 export class GeminiService {
@@ -102,6 +104,43 @@ export class GeminiService {
       `You are ~${distM}m ${dirLabel} of where you should be`;
   }
 
+  private computeAnchorFrechetKm(anchors: { lat: number; lng: number }[], ideal: Point[]): number {
+    if (anchors.length === 0 || ideal.length === 0) return 0;
+    let maxMinDist = 0;
+    for (const p of ideal) {
+      let minDist = Infinity;
+      for (const a of anchors) {
+        const d = turf.distance(turf.point([p.lng, p.lat]), turf.point([a.lng, a.lat]), { units: 'kilometers' });
+        if (d < minDist) minDist = d;
+      }
+      if (minDist !== Infinity && minDist > maxMinDist) maxMinDist = minDist;
+    }
+    return maxMinDist;
+  }
+
+  private computeAnchorFeedback(anchors: { lat: number; lng: number }[], ideal: Point[]): string {
+    if (anchors.length === 0 || ideal.length === 0) return '';
+    const aMinLat = Math.min(...anchors.map(p => p.lat));
+    const aMaxLat = Math.max(...anchors.map(p => p.lat));
+    const aMinLng = Math.min(...anchors.map(p => p.lng));
+    const aMaxLng = Math.max(...anchors.map(p => p.lng));
+    const iMinLat = Math.min(...ideal.map(p => p.lat));
+    const iMaxLat = Math.max(...ideal.map(p => p.lat));
+    const iMinLng = Math.min(...ideal.map(p => p.lng));
+    const iMaxLng = Math.max(...ideal.map(p => p.lng));
+    const latSpan = iMaxLat - iMinLat || 1;
+    const lngSpan = iMaxLng - iMinLng || 1;
+    const missing: string[] = [];
+    if (aMaxLat < iMinLat + latSpan * 0.3) missing.push('N');
+    if (aMinLat > iMaxLat - latSpan * 0.3) missing.push('S');
+    if (aMaxLng < iMinLng + lngSpan * 0.3) missing.push('W');
+    if (aMinLng > iMaxLng - lngSpan * 0.3) missing.push('E');
+    if (missing.length > 0) {
+      return `Previous selection missed the ${missing.join('/')} portion of the shape. Ensure anchors span the full extent.`;
+    }
+    return 'Previous selections were clustered — ensure anchors span the full shape boundary.';
+  }
+
   async selectNodesStaged(
     stageNodePools: OSMNode[][],
     script: RouteStage[],
@@ -161,22 +200,19 @@ export class GeminiService {
     const stageBlocks = stageDistances.map((s, i) => {
       const pool = stageNodePools[i] || [];
       const idealSubPath = idealStagePaths[i] || [];
-      const idealSubSampled = this.samplePoints(idealSubPath, 3);
+      const idealSubSampled = this.samplePoints(idealSubPath, 15);
       const idealSubStr = idealSubSampled
         .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
 
-      // Trim pool to the N closest nodes to the stage midpoint
       let trimmedPool = pool;
       if (pool.length > MAX_NODES_PER_STAGE && idealSubPath.length > 0) {
-        const midLat = idealSubPath.reduce((s, p) => s + p.lat, 0) / idealSubPath.length;
-        const midLng = idealSubPath.reduce((s, p) => s + p.lng, 0) / idealSubPath.length;
+        const stageLine = turf.lineString(idealSubPath.map(p => [p.lng, p.lat]));
         trimmedPool = [...pool]
-          .sort((a, b) => {
-            const da = Math.hypot(a.lat - midLat, a.lng - midLng);
-            const db = Math.hypot(b.lat - midLat, b.lng - midLng);
-            return da - db;
-          })
+          .sort((a, b) =>
+            turf.pointToLineDistance(turf.point([a.lng, a.lat]), stageLine, { units: 'meters' }) -
+            turf.pointToLineDistance(turf.point([b.lng, b.lat]), stageLine, { units: 'meters' })
+          )
           .slice(0, MAX_NODES_PER_STAGE);
       }
 
@@ -209,13 +245,45 @@ Preferred start node ID: ${aiStartNodeIndex}
       this.validateRawResult(result);
 
       // Map indices back to real OSM IDs
-      const finalResult = {
+      const finalResult: GeminiStagedResult = {
         startNodeId: indexToId.get(String(result.startNodeId)) || startNodeId,
         stages: result.stages.map((s: any) => ({
           stageNumber: s.stageNumber,
           nodeIds: (s.nodeIds || []).map((idx: any) => indexToId.get(String(idx))).filter(Boolean)
         }))
       };
+
+      // Closed-loop enforcement: if last node ≠ first node and they're >50m apart, append start
+      const firstId = finalResult.stages[0]?.nodeIds[0];
+      const lastStage = finalResult.stages[finalResult.stages.length - 1];
+      const lastId = lastStage?.nodeIds[lastStage.nodeIds.length - 1];
+      if (firstId && lastId && firstId !== lastId) {
+        const firstNode = allUniqueNodes.get(firstId);
+        const lastNode = allUniqueNodes.get(lastId);
+        if (firstNode && lastNode) {
+          const gapM = turf.distance(
+            turf.point([firstNode.lng, firstNode.lat]),
+            turf.point([lastNode.lng, lastNode.lat]),
+            { units: 'meters' }
+          );
+          if (gapM > 50) {
+            lastStage.nodeIds.push(firstId);
+          }
+        }
+      }
+
+      // Anchor quality check: if anchors deviate >40% of shape bbox diagonal, flag for retry
+      const allAnchorNodes = finalResult.stages.flatMap(s =>
+        s.nodeIds.map(id => allUniqueNodes.get(id)).filter((n): n is OSMNode => !!n)
+      );
+      if (allAnchorNodes.length >= 2 && idealPath.length >= 2) {
+        const bboxDiagonal = computeBboxDiagonal(idealPath);
+        const frechetKm = this.computeAnchorFrechetKm(allAnchorNodes, idealPath);
+        if (bboxDiagonal > 0 && frechetKm / bboxDiagonal > 0.40) {
+          finalResult.anchorQualityFailed = true;
+          finalResult.anchorFeedback = this.computeAnchorFeedback(allAnchorNodes, idealPath);
+        }
+      }
 
       // Cache result (use inMemoryCacheKey which includes node-pool fingerprint)
       this.cache.set(inMemoryCacheKey, finalResult);

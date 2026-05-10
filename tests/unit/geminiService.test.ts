@@ -136,3 +136,45 @@ describe("GeminiService.submitGeminiJob", () => {
     expect(caughtErr?.message).toMatch(/Permission denied/);
   });
 });
+
+describe('GeminiService anchor quality helpers', () => {
+  let service: GeminiService;
+  beforeEach(() => { service = new GeminiService(); });
+
+  it('computeAnchorFrechetKm returns 0 for empty inputs', () => {
+    expect((service as any).computeAnchorFrechetKm([], [])).toBe(0);
+    expect((service as any).computeAnchorFrechetKm([{ lat: 0, lng: 0 }], [])).toBe(0);
+  });
+
+  it('computeAnchorFrechetKm is small when anchors lie on the ideal path', () => {
+    const ideal = [
+      { lat: 51.50, lng: -0.10 },
+      { lat: 51.51, lng: -0.10 },
+      { lat: 51.52, lng: -0.10 },
+    ];
+    const anchors = [{ lat: 51.50, lng: -0.10 }, { lat: 51.51, lng: -0.10 }, { lat: 51.52, lng: -0.10 }];
+    const d = (service as any).computeAnchorFrechetKm(anchors, ideal);
+    expect(d).toBeLessThan(0.1);
+  });
+
+  it('computeAnchorFrechetKm is large when anchors miss the ideal path', () => {
+    const ideal = [
+      { lat: 51.50, lng: -0.10 },
+      { lat: 51.51, lng: -0.10 },
+    ];
+    const anchors = [{ lat: 52.50, lng: -0.10 }];
+    const d = (service as any).computeAnchorFrechetKm(anchors, ideal);
+    expect(d).toBeGreaterThan(50);
+  });
+
+  it('computeAnchorFeedback identifies the missing compass direction', () => {
+    const ideal = [
+      { lat: 51.50, lng: -0.10 },
+      { lat: 51.55, lng: -0.05 },
+    ];
+    // Anchors only cover southern portion
+    const anchors = [{ lat: 51.50, lng: -0.10 }, { lat: 51.50, lng: -0.09 }];
+    const feedback = (service as any).computeAnchorFeedback(anchors, ideal);
+    expect(feedback).toMatch(/N/);
+  });
+});
