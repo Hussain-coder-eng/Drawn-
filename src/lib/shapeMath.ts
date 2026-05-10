@@ -311,3 +311,28 @@ export function generateSquare(center: Point, distanceKm: number): Point[] {
   ];
   return scaleAndCenter(points.map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
 }
+
+type InputModeLocal = 'shapes' | 'text' | 'draw';
+
+export function isClosedShape(
+  mode: InputModeLocal,
+  selectedShape: string | null,
+  normalizedDrawnPath: NormalizedPoint[]
+): boolean {
+  if (mode === 'shapes') {
+    return ['circle', 'heart', 'star', 'square', 'infinity'].includes(selectedShape ?? '');
+  }
+  if (mode === 'draw' && normalizedDrawnPath.length >= 2) {
+    const first = normalizedDrawnPath[0];
+    const last = normalizedDrawnPath[normalizedDrawnPath.length - 1];
+    const gap = Math.sqrt((first.x - last.x) ** 2 + (first.y - last.y) ** 2);
+    const xs = normalizedDrawnPath.map(p => p.x);
+    const ys = normalizedDrawnPath.map(p => p.y);
+    const bboxDiag = Math.sqrt(
+      (Math.max(...xs) - Math.min(...xs)) ** 2 +
+      (Math.max(...ys) - Math.min(...ys)) ** 2
+    );
+    return bboxDiag > 0 && gap < bboxDiag * 0.1;
+  }
+  return false;
+}
