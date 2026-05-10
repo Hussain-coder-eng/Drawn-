@@ -178,14 +178,11 @@ function closeLoop(waypoints: Point[]): Point[] {
 /** Rotates a closed-loop path so the point nearest to `anchor` becomes index 0. */
 function rotateToNearest(path: Point[], anchor: Point): Point[] {
   if (path.length < 2) return path;
+  const anchorPt = turf.point([anchor.lng, anchor.lat]);
   let closestIdx = 0;
   let minDist = Infinity;
   for (let i = 0; i < path.length; i++) {
-    const d = turf.distance(
-      turf.point([anchor.lng, anchor.lat]),
-      turf.point([path[i].lng, path[i].lat]),
-      { units: 'meters' }
-    );
+    const d = turf.distance(anchorPt, turf.point([path[i].lng, path[i].lat]), { units: 'meters' });
     if (d < minDist) { minDist = d; closestIdx = i; }
   }
   return [...path.slice(closestIdx), ...path.slice(0, closestIdx)];
