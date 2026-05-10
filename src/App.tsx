@@ -109,6 +109,7 @@ export default function App() {
     drawnPath: [],
     normalizedDrawnPath: [],
     nodeMap: new Map(),
+    returnToStart: false,
   });
   const [isNudging, setIsNudging] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
@@ -584,6 +585,8 @@ export default function App() {
           updateState({ mode, hasResult: false });
           setSheetExpanded(true);
         }}
+        returnToStart={state.returnToStart}
+        onReturnToStartChange={(v) => updateState({ returnToStart: v })}
       />
 
       <RouteSettings

@@ -23,6 +23,37 @@ interface DesignInputProps {
   onReturnToStartChange: (v: boolean) => void;
 }
 
+function ReturnToStartToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={value}
+      type="button"
+      data-testid="return-to-start-toggle"
+      onClick={() => onChange(!value)}
+      className={cn(
+        "flex items-center gap-2.5 px-3 py-2 rounded-[10px] border w-full transition-colors",
+        value
+          ? "border-accent-primary/50 bg-accent-primary/10"
+          : "border-divider bg-bg-card hover:border-accent-primary/30"
+      )}
+    >
+      <div className={cn(
+        "w-8 h-4 rounded-full transition-colors relative shrink-0",
+        value ? "bg-accent-primary" : "bg-text-muted"
+      )}>
+        <div className={cn(
+          "absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform",
+          value ? "left-0.5 translate-x-4" : "left-0.5 translate-x-0"
+        )} />
+      </div>
+      <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
+        Return to start
+      </span>
+    </button>
+  );
+}
+
 export default function DesignInput({
   mode,
   selectedShape,
@@ -127,29 +158,7 @@ export default function DesignInput({
                   className="w-full h-[52px] bg-bg-card border border-divider rounded-[10px] pl-12 pr-4 text-[15px] font-sans text-white focus:outline-none focus:border-accent-primary transition-colors placeholder:text-text-muted"
                 />
               </div>
-              <button
-                data-testid="return-to-start-toggle"
-                onClick={() => onReturnToStartChange(!returnToStart)}
-                className={cn(
-                  "flex items-center gap-2.5 px-3 py-2 rounded-[10px] border w-full transition-colors",
-                  returnToStart
-                    ? "border-accent-primary/50 bg-accent-primary/10"
-                    : "border-divider bg-bg-card hover:border-accent-primary/30"
-                )}
-              >
-                <div className={cn(
-                  "w-8 h-4 rounded-full transition-colors relative shrink-0",
-                  returnToStart ? "bg-accent-primary" : "bg-text-muted"
-                )}>
-                  <div className={cn(
-                    "absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform",
-                    returnToStart ? "left-0.5 translate-x-4" : "left-0.5 translate-x-0"
-                  )} />
-                </div>
-                <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
-                  Return to start
-                </span>
-              </button>
+              <ReturnToStartToggle value={returnToStart} onChange={onReturnToStartChange} />
             </div>
           )}
 
@@ -162,29 +171,7 @@ export default function DesignInput({
                   <span data-point-count={drawnPath.length} className="text-[10px] font-bold text-success uppercase tracking-wider">Shape Captured</span>
                 </div>
               )}
-              <button
-                data-testid="return-to-start-toggle"
-                onClick={() => onReturnToStartChange(!returnToStart)}
-                className={cn(
-                  "flex items-center gap-2.5 px-3 py-2 rounded-[10px] border w-full transition-colors",
-                  returnToStart
-                    ? "border-accent-primary/50 bg-accent-primary/10"
-                    : "border-divider bg-bg-card hover:border-accent-primary/30"
-                )}
-              >
-                <div className={cn(
-                  "w-8 h-4 rounded-full transition-colors relative shrink-0",
-                  returnToStart ? "bg-accent-primary" : "bg-text-muted"
-                )}>
-                  <div className={cn(
-                    "absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform",
-                    returnToStart ? "left-0.5 translate-x-4" : "left-0.5 translate-x-0"
-                  )} />
-                </div>
-                <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
-                  Return to start
-                </span>
-              </button>
+              <ReturnToStartToggle value={returnToStart} onChange={onReturnToStartChange} />
             </div>
           )}
         </motion.div>
