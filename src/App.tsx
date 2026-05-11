@@ -57,12 +57,14 @@ import {
   generateArrow,
   generateLightning,
   scaleAndCenter,
+  computeBboxDiagonal,
   NormalizedPoint,
   adaptiveSimplify,
   SHAPE_SIMPLIFICATION_CONFIG,
   projectShapeToLatLng,
   isClosedShape,
 } from "./lib/shapeMath";
+import * as turf from "@turf/turf";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
 import { preprocessorService } from "./services/preprocessorService";
@@ -346,7 +348,17 @@ export default function App() {
       const simplifiedPoints = adaptiveSimplify(normalizedPoints, config).points;
 
       setLoadingMessage("Fetching local road network...");
-      const baseRadiusMeters = Math.max(800, Math.round((distInKm / (2 * Math.PI)) * 1.3 * 1000));
+      const previewPoints = scaleAndCenter(
+        simplifiedPoints.map(p => ({ lat: p.y, lng: p.x })),
+        userLocation,
+        distInKm
+      );
+      const shapeHalfDiagonalM = (computeBboxDiagonal(previewPoints) / 2) * 1000;
+      const circleHeuristicM = (distInKm / (2 * Math.PI)) * 1.3 * 1000;
+      const baseRadiusMeters = Math.max(
+        800,
+        Math.round(Math.max(circleHeuristicM, shapeHalfDiagonalM * 1.2))
+      );
 
       let network = await overpassService.fetchRoadNetwork(userLocation, baseRadiusMeters, (msg) => {
         setLoadingMessage(msg);
@@ -387,8 +399,21 @@ export default function App() {
 
       let forcedAnchor: Point | undefined;
       if (closed) {
-        // batchSnap falls back to raw GPS if OSRM is unreachable; OSRM will re-snap during routing
-        const [startOnRoad] = await routingService.batchSnap([userLocation]);
+        // Anchor the loop to the nearest point on the ideal perimeter, not the user's GPS.
+        // Using the user's position (often near the shape's center) pulls the loop inward
+        // and clips the arms farthest from the user.
+        const idealLine = turf.lineString(
+          bestConfig.projectedPoints.map((p: Point) => [p.lng, p.lat])
+        );
+        const nearestOnIdeal = turf.nearestPointOnLine(
+          idealLine,
+          turf.point([userLocation.lng, userLocation.lat])
+        );
+        const idealAnchor: Point = {
+          lat: nearestOnIdeal.geometry.coordinates[1],
+          lng: nearestOnIdeal.geometry.coordinates[0],
+        };
+        const [startOnRoad] = await routingService.batchSnap([idealAnchor]);
         forcedAnchor = startOnRoad;
       }
 
