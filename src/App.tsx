@@ -34,6 +34,7 @@ import { OverpassService } from "./services/overpassService";
 import { FitnessService } from "./services/fitnessService";
 import { checkFeasibility } from "./services/feasibilityService";
 import { snapIdealPathToRoads } from "./services/nodeSnapService";
+import { graphRouteShape } from "./services/graphRoutingService";
 import {
   SHAPE_SCRIPTS,
   getLetterScript,
@@ -441,7 +442,13 @@ export default function App() {
         );
 
         setLoadingMessage("Routing on real streets...");
-        const routingResult = await routingService.routeWithLockedWaypoints(snappedWaypoints);
+        const routingResult = await graphRouteShape(
+          snappedWaypoints,
+          bestConfig.projectedPoints,
+          network.nodeMap,
+          network.edgeMap,
+          routingService
+        );
         const routedPoints = routingResult.polylineCoords.map(c => ({ lat: c[1], lng: c[0] }));
 
         const fidelityScore = fitnessService.scoreFidelity(routedPoints, state.mode, bestConfig.projectedPoints);
