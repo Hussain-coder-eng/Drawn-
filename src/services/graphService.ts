@@ -9,7 +9,8 @@ export interface AStarOptions {
 }
 
 export const DEFAULT_ALPHA = 1.0;
-export const DEFAULT_BETA = 2.0;
+// β > 4.0 required for shape-hugging edges to beat direct shortcuts on typical road geometry
+export const DEFAULT_BETA = 4.5;
 
 class MinHeap {
   private heap: { id: string; f: number }[] = [];
@@ -105,14 +106,11 @@ export function aStarSegment(
   const closed = new Set<string>();
   const open = new MinHeap();
 
+  const goalPt = turf.point([goalNode.lng, goalNode.lat]);
   const heuristic = (id: string): number => {
     const node = nodeMap.get(id);
     if (!node) return 0;
-    return alpha * turf.distance(
-      turf.point([node.lng, node.lat]),
-      turf.point([goalNode.lng, goalNode.lat]),
-      { units: "meters" }
-    );
+    return alpha * turf.distance(turf.point([node.lng, node.lat]), goalPt, { units: "meters" });
   };
 
   open.push({ id: startId, f: heuristic(startId) });

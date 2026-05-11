@@ -12,12 +12,15 @@ export async function graphRouteShape(
   routingService: Pick<RoutingService, "routeWithLockedWaypoints">,
   options?: AStarOptions
 ): Promise<{ polylineCoords: [number, number][] }> {
-  if (snappedWaypoints.length < 2) {
+  if (snappedWaypoints.length < 2 || idealPath.length < 2) {
     return routingService.routeWithLockedWaypoints(snappedWaypoints);
   }
 
   const idealLine = turf.lineString(idealPath.map(p => [p.lng, p.lat]));
   const totalIdealKm = turf.length(idealLine, { units: "kilometers" });
+  if (totalIdealKm === 0) {
+    return routingService.routeWithLockedWaypoints(snappedWaypoints);
+  }
   const M = snappedWaypoints.length;
   const allCoords: [number, number][] = [];
 
@@ -53,9 +56,18 @@ export async function graphRouteShape(
 
     if (!segmentCoords) {
       console.warn(`graphRouteShape: A* returned null for segment ${i}→${i + 1}, OSRM fallback`);
-      const fallback = await routingService.routeWithLockedWaypoints([A, B]);
-      segmentCoords = fallback.polylineCoords;
+      try {
+        const fallback = await routingService.routeWithLockedWaypoints([A, B]);
+        segmentCoords = fallback.polylineCoords.length > 0
+          ? fallback.polylineCoords
+          : [[A.lng, A.lat], [B.lng, B.lat]];
+      } catch {
+        console.warn(`graphRouteShape: OSRM fallback also failed for segment ${i}→${i + 1}, straight-line`);
+        segmentCoords = [[A.lng, A.lat], [B.lng, B.lat]];
+      }
     }
+
+    if (segmentCoords.length === 0) continue;
 
     if (i === 0) {
       allCoords.push(...segmentCoords);

@@ -47,10 +47,10 @@ describe("aStarSegment", () => {
     expect(result!.map(n => n.id)).toEqual([1, 2, 3, 4]);
   });
 
-  it("prefers shape-hugging U-arc path over direct shortcut when beta is high", () => {
+  it("prefers shape-hugging U-arc path over direct shortcut with default options", () => {
     // Direct edge: start→goal (short but deviates from ideal arc)
     // Arc edges:  start→topLeft→topRight→goal (longer but hugs ideal)
-    // β=5.0 needed: arc cost=3×1113=3339; direct cost=1113+5×556=3893 → arc wins
+    // β > 4.0 required for arc to win; DEFAULT_BETA must be at least 4.0
     const nmap = new Map<string, OSMNode>([
       ["start",    { id: 1, lat: 0,    lng: 0 }],
       ["topLeft",  { id: 2, lat: 0.01, lng: 0 }],
@@ -70,10 +70,8 @@ describe("aStarSegment", () => {
       { lat: 0.01, lng: 0.01 },
       { lat: 0,    lng: 0.01 },
     ];
-    const result = aStarSegment("start", "goal", nmap, emap, ideal, {
-      alpha: 1.0,
-      beta: 5.0,
-    });
+    // No explicit options — uses DEFAULT_ALPHA and DEFAULT_BETA
+    const result = aStarSegment("start", "goal", nmap, emap, ideal);
     expect(result).not.toBeNull();
     const ids = result!.map(n => n.id);
     expect(ids).toContain(2); // topLeft
@@ -136,5 +134,44 @@ describe("graphRouteShape", () => {
 
     expect(result.polylineCoords.length).toBe(5);
     expect(mockRoutingService.routeWithLockedWaypoints).not.toHaveBeenCalled();
+  });
+
+  it("falls back to OSRM when A* returns null (disconnected segment)", async () => {
+    // Two nodes with no edges — A* returns null → OSRM fallback per segment
+    const nmap = new Map<string, OSMNode>([
+      ["n1", { id: 1, lat: 0, lng: 0 }],
+      ["n2", { id: 2, lat: 0, lng: 0.01 }],
+    ]);
+    const emap = new Map([["n1", []], ["n2", []]]);
+    const waypoints: Point[] = [
+      { lat: 0, lng: 0 },
+      { lat: 0, lng: 0.01 },
+    ];
+    const idealPath: Point[] = [
+      { lat: 0, lng: 0 },
+      { lat: 0, lng: 0.01 },
+    ];
+    const mockCoords: [number, number][] = [[0, 0], [0.005, 0], [0.01, 0]];
+    const mockRoutingService = {
+      routeWithLockedWaypoints: vi.fn().mockResolvedValue({ polylineCoords: mockCoords }),
+    };
+
+    const result = await graphRouteShape(waypoints, idealPath, nmap, emap, mockRoutingService as any);
+
+    expect(mockRoutingService.routeWithLockedWaypoints).toHaveBeenCalledWith([waypoints[0], waypoints[1]]);
+    expect(result.polylineCoords).toEqual(mockCoords);
+  });
+
+  it("falls back to OSRM when idealPath has fewer than 2 points", async () => {
+    const nmap = new Map<string, OSMNode>([["n1", { id: 1, lat: 0, lng: 0 }]]);
+    const emap = new Map([["n1", []]]);
+    const waypoints: Point[] = [{ lat: 0, lng: 0 }, { lat: 0, lng: 0.01 }];
+    const mockRoutingService = {
+      routeWithLockedWaypoints: vi.fn().mockResolvedValue({ polylineCoords: [[0, 0], [0.01, 0]] as [number,number][] }),
+    };
+
+    await graphRouteShape(waypoints, [{ lat: 0, lng: 0 }], nmap, emap, mockRoutingService as any);
+
+    expect(mockRoutingService.routeWithLockedWaypoints).toHaveBeenCalledWith(waypoints);
   });
 });
