@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { findNearestGraphNode, aStarSegment } from "../../src/services/graphService";
+import { graphRouteShape } from "../../src/services/graphRoutingService";
 import type { OSMNode } from "../../src/services/overpassService";
 import type { Point } from "../../src/lib/shapeMath";
 
@@ -86,5 +87,54 @@ describe("aStarSegment", () => {
     ]);
     const emap = new Map([["A", []], ["B", []]]);
     expect(aStarSegment("A", "B", nmap, emap, [])).toBeNull();
+  });
+});
+
+// --- graphRouteShape ---
+
+describe("graphRouteShape", () => {
+  it("concatenates two A* segments without duplicating the junction point", async () => {
+    // 5-node linear graph: n1-n2-n3-n4-n5
+    const nmap = new Map<string, OSMNode>([
+      ["n1", { id: 1, lat: 0, lng: 0 }],
+      ["n2", { id: 2, lat: 0, lng: 0.001 }],
+      ["n3", { id: 3, lat: 0, lng: 0.002 }],
+      ["n4", { id: 4, lat: 0, lng: 0.003 }],
+      ["n5", { id: 5, lat: 0, lng: 0.004 }],
+    ]);
+    const emap = new Map([
+      ["n1", ["n2"]],
+      ["n2", ["n1", "n3"]],
+      ["n3", ["n2", "n4"]],
+      ["n4", ["n3", "n5"]],
+      ["n5", ["n4"]],
+    ]);
+    // 3 waypoints → 2 segments
+    // Segment 1: (0,0)→(0,0.002) snaps to n1→n3, A* returns [n1,n2,n3] = 3 coords
+    // Segment 2: (0,0.002)→(0,0.004) snaps to n3→n5, A* returns [n3,n4,n5], skip first = 2 coords
+    // Total = 5, not 6
+    const waypoints: Point[] = [
+      { lat: 0, lng: 0 },
+      { lat: 0, lng: 0.002 },
+      { lat: 0, lng: 0.004 },
+    ];
+    const idealPath: Point[] = [
+      { lat: 0, lng: 0 },
+      { lat: 0, lng: 0.004 },
+    ];
+    const mockRoutingService = {
+      routeWithLockedWaypoints: vi.fn().mockResolvedValue({ polylineCoords: [] }),
+    };
+
+    const result = await graphRouteShape(
+      waypoints,
+      idealPath,
+      nmap,
+      emap,
+      mockRoutingService as any
+    );
+
+    expect(result.polylineCoords.length).toBe(5);
+    expect(mockRoutingService.routeWithLockedWaypoints).not.toHaveBeenCalled();
   });
 });
