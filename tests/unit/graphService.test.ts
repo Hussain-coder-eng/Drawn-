@@ -86,6 +86,17 @@ describe("aStarSegment", () => {
     const emap = new Map([["A", []], ["B", []]]);
     expect(aStarSegment("A", "B", nmap, emap, [])).toBeNull();
   });
+
+  it("returns a single-node path when start equals goal", () => {
+    const nmap = new Map<string, OSMNode>([
+      ["A", { id: 1, lat: 0, lng: 0 }],
+    ]);
+    const emap = new Map([["A", []]]);
+    const result = aStarSegment("A", "A", nmap, emap, []);
+    expect(result).not.toBeNull();
+    expect(result!.length).toBe(1);
+    expect(result![0].id).toBe(1);
+  });
 });
 
 // --- graphRouteShape ---
@@ -173,5 +184,28 @@ describe("graphRouteShape", () => {
     await graphRouteShape(waypoints, [{ lat: 0, lng: 0 }], nmap, emap, mockRoutingService as any);
 
     expect(mockRoutingService.routeWithLockedWaypoints).toHaveBeenCalledWith(waypoints);
+  });
+
+  it("falls back to OSRM immediately when snappedWaypoints has fewer than 2 points", async () => {
+    const nmap = new Map<string, OSMNode>([["n1", { id: 1, lat: 0, lng: 0 }]]);
+    const emap = new Map([["n1", []]]);
+    const singleWaypoint: Point[] = [{ lat: 0, lng: 0 }];
+    const idealPath: Point[] = [{ lat: 0, lng: 0 }, { lat: 0, lng: 0.01 }];
+    const mockRoutingService = {
+      routeWithLockedWaypoints: vi.fn().mockResolvedValue({
+        polylineCoords: [[0, 0], [0.01, 0]] as [number, number][],
+      }),
+    };
+
+    const result = await graphRouteShape(
+      singleWaypoint,
+      idealPath,
+      nmap,
+      emap,
+      mockRoutingService as any
+    );
+
+    expect(mockRoutingService.routeWithLockedWaypoints).toHaveBeenCalledWith(singleWaypoint);
+    expect(result.polylineCoords).toEqual([[0, 0], [0.01, 0]]);
   });
 });
