@@ -133,32 +133,15 @@ const fracB = (i + 1) / (M - 1);
 const kmA = fracA * totalIdealKm;
 const kmB = fracB * totalIdealKm;
 
-// Walk idealPath accumulating arc length; collect vertices in [kmA, kmB]
-const interior: Point[] = [];
-let cumKm = 0;
-for (let j = 1; j < idealPath.length; j++) {
-  const segLen = turf.distance(
-    turf.point([idealPath[j-1].lng, idealPath[j-1].lat]),
-    turf.point([idealPath[j].lng, idealPath[j].lat]),
-    { units: 'kilometers' }
-  );
-  if (cumKm + segLen > kmA && cumKm < kmB) {
-    interior.push(idealPath[j]);
-  }
-  cumKm += segLen;
-  if (cumKm >= kmB) break;
-}
-
-const startPt = turf.along(idealLine, kmA, { units: 'kilometers' });
-const endPt   = turf.along(idealLine, kmB, { units: 'kilometers' });
-const idealSubPath: Point[] = [
-  { lat: startPt.geometry.coordinates[1], lng: startPt.geometry.coordinates[0] },
-  ...interior,
-  { lat: endPt.geometry.coordinates[1],   lng: endPt.geometry.coordinates[0] },
-];
+// Use turf.lineSliceAlong — same call used in routingService.ts:566
+const sliced = turf.lineSliceAlong(idealLine, kmA, kmB);
+const idealSubPath: Point[] = sliced.geometry.coordinates.map(c => ({
+  lat: c[1],
+  lng: c[0],
+}));
 ```
 
-This is a pure sub-polyline extraction — no API calls. `turf.along` is synchronous.
+This is a pure sub-polyline extraction — no API calls. `turf.lineSliceAlong` is synchronous and is already used in `routingService.ts:566`.
 
 **OSRM fallback per segment:** A single `routeWithLockedWaypoints([A, B])` call with 2 waypoints is cheap (one OSRM request). This is the safety net for disconnected graph areas (parks, waterways cutting through the road network).
 
