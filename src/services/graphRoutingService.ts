@@ -28,22 +28,27 @@ export async function graphRouteShape(
     const A = snappedWaypoints[i];
     const B = snappedWaypoints[i + 1];
 
-    const fracA = i / (M - 1);
-    const fracB = (i + 1) / (M - 1);
-    const kmA = fracA * totalIdealKm;
-    const kmB = fracB * totalIdealKm;
+    // Project snapped waypoints onto ideal line for accurate sub-path bounds
+    // (same nearestPointOnLine pattern used at routingService.ts:556)
+    const projA = turf.nearestPointOnLine(idealLine, turf.point([A.lng, A.lat]));
+    const projB = turf.nearestPointOnLine(idealLine, turf.point([B.lng, B.lat]));
+    const kmA = projA.properties.location ?? 0;
+    const kmB = projB.properties.location ?? 0;
 
     // Extract ideal sub-path using turf.lineSliceAlong (same pattern as routingService.ts:566)
     let idealSubPath: Point[] = [A, B];
     try {
-      const sliced = turf.lineSliceAlong(idealLine, kmA, kmB);
+      const sliced = turf.lineSliceAlong(idealLine, Math.min(kmA, kmB), Math.max(kmA, kmB));
       idealSubPath = sliced.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
     } catch {
       // lineSliceAlong throws on degenerate segments — [A,B] fallback is fine
     }
 
-    const startId = findNearestGraphNode(A, nodeMap);
-    const goalId = findNearestGraphNode(B, nodeMap);
+    // Use ideal sub-path endpoints for graph lookup (avoids snap-to-road-midpoint mismatch)
+    const lookupA = idealSubPath.length >= 2 ? idealSubPath[0] : A;
+    const lookupB = idealSubPath.length >= 2 ? idealSubPath[idealSubPath.length - 1] : B;
+    const startId = findNearestGraphNode(lookupA, nodeMap);
+    const goalId = findNearestGraphNode(lookupB, nodeMap);
 
     let segmentCoords: [number, number][] | null = null;
 
