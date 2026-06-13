@@ -26,7 +26,7 @@ export class FitnessService {
   scoreFidelity(routedPoints: Point[], mode: string, idealPoints: Point[]): number {
     if (mode === 'premade') {
       return this.calculateFrechetFidelity(idealPoints, routedPoints);
-    } else if (mode === 'draw') {
+    } else if (mode === 'draw' || mode === 'image') {
       return this.calculateDTWFidelity(idealPoints, routedPoints);
     }
     return 50; // text mode — no geometric fidelity target
