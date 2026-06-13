@@ -1,11 +1,12 @@
 import * as turf from "@turf/turf";
 import { jsonrepair } from "jsonrepair";
-import { addDoc, collection, onSnapshot, serverTimestamp } from "firebase/firestore";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { Point, computeBboxDiagonal } from "../lib/shapeMath";
 import { OSMNode } from "./overpassService";
 import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness, StageScore } from "./fitnessService";
 import { auth, db } from "../firebase";
+import { pollJobResult } from "./jobPoller";
 
 export interface GeminiStagedResult {
   startNodeId: number;
@@ -34,36 +35,7 @@ export class GeminiService {
       updatedAt: serverTimestamp(),
     });
 
-    return new Promise<string>((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        unsubscribe();
-        reject(new Error("Route generation timed out. Please try again."));
-      }, 120_000);
-
-      const unsubscribe = onSnapshot(
-        jobRef,
-        (snap) => {
-          const data = snap.data();
-          if (!data) return;
-          if (data.status === "done") {
-            clearTimeout(timeoutHandle);
-            unsubscribe();
-            resolve(data.result as string);
-          } else if (data.status === "failed") {
-            clearTimeout(timeoutHandle);
-            unsubscribe();
-            reject(new Error((data.error as string) || "Route generation failed."));
-          } else if (data.status === "processing") {
-            onProgress?.("AI is analyzing the road network...");
-          }
-        },
-        (error) => {
-          clearTimeout(timeoutHandle);
-          unsubscribe();
-          reject(error);
-        }
-      );
-    });
+    return pollJobResult(jobRef, { onProgress });
   }
 
   private samplePoints(points: Point[], n: number): Point[] {
