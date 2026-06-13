@@ -341,6 +341,12 @@ export default function App() {
           throw new Error("Please draw a shape on the canvas first.");
         }
         normalizedPoints = state.normalizedDrawnPath;
+      } else if (state.mode === "image") {
+        shapeLabel = "Image Route";
+        if (state.normalizedDrawnPath.length < 2) {
+          throw new Error("Please upload an image to trace first.");
+        }
+        normalizedPoints = state.normalizedDrawnPath;
       }
 
       // 2. Adaptive Simplification
@@ -577,7 +583,7 @@ export default function App() {
       }
     } else if (state.mode === "text" && validText) {
       return composeWordPath(validText, distInKm, userLocation).waypoints;
-    } else if (state.mode === "draw" && state.normalizedDrawnPath.length > 0) {
+    } else if ((state.mode === "draw" || state.mode === "image") && state.normalizedDrawnPath.length > 0) {
       return projectShapeToLatLng(state.normalizedDrawnPath, userLocation.lat, userLocation.lng, distInKm / 2);
     }
     return [];

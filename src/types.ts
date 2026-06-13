@@ -1,6 +1,6 @@
 import { Point } from "./lib/shapeMath";
 
-export type InputMode = "shapes" | "text" | "draw";
+export type InputMode = "shapes" | "text" | "draw" | "image";
 
 export interface DebugInfo {
   idealPath: Array<{ lat: number; lng: number }>;

@@ -26,7 +26,9 @@ export const SHAPE_SIMPLIFICATION_CONFIG: Record<string, { epsilon: number, targ
   letterComplex:{ epsilon: 0.03, targetSegments: 8, minSegments: 6 },
   // Custom drawing
   draw:      { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
-  drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
+  drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
+  // Image outline (behaves like freehand draw downstream)
+  image:     { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
 };
 
 export function rdpSimplify(points: NormalizedPoint[], epsilon: number): NormalizedPoint[] {

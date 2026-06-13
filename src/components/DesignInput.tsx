@@ -3,10 +3,11 @@ import { SHAPES } from "@/src/constants";
 import { cn } from "@/src/lib/utils";
 import { InputMode } from "@/src/types";
 import { motion } from "motion/react";
-import { Check, Keyboard } from "lucide-react";
+import { Check, Keyboard, Image as ImageIcon } from "lucide-react";
 import { Point, NormalizedPoint } from "@/src/lib/shapeMath";
-import React from "react";
+import React, { useState, useRef } from "react";
 import { DrawingCanvas } from "./DrawingCanvas";
+import { imageToOutline } from "@/src/services/visionService";
 
 interface DesignInputProps {
   mode: InputMode;
@@ -74,17 +75,45 @@ export default function DesignInput({
     setDrawnPath(previewPoints);
   };
 
+  // Image mode local state
+  const [imageProgress, setImageProgress] = useState<string>("");
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [isImageLoading, setIsImageLoading] = useState(false);
+  const [imageThumbnail, setImageThumbnail] = useState<string | null>(null);
+  const [imageOutlineCaptured, setImageOutlineCaptured] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageFile = async (file: File) => {
+    setImageError(null);
+    setImageOutlineCaptured(false);
+    setImageProgress("");
+    setIsImageLoading(true);
+    setImageThumbnail(URL.createObjectURL(file));
+    try {
+      const outline = await imageToOutline(file, (msg) => setImageProgress(msg));
+      handleShapeComplete(outline);
+      setImageOutlineCaptured(true);
+    } catch (err: any) {
+      setImageError(err.message || "Failed to trace image. Please try again.");
+      setImageThumbnail(null);
+    } finally {
+      setIsImageLoading(false);
+      setImageProgress("");
+    }
+  };
+
   const modeLabels: Record<InputMode, string> = {
     shapes: "Premade",
     text: "Text",
     draw: "Draw",
+    image: "Image",
   };
 
   return (
     <div className="space-y-4">
       {/* Mode cards — always visible */}
-      <div className="grid grid-cols-3 gap-2 pt-2">
-        {(["shapes", "text", "draw"] as InputMode[]).map((m) => (
+      <div className="grid grid-cols-4 gap-2 pt-2">
+        {(["shapes", "text", "draw", "image"] as InputMode[]).map((m) => (
           <button
             key={m}
             data-testid={`mode-${m}`}
@@ -172,6 +201,67 @@ export default function DesignInput({
                 </div>
               )}
               <ReturnToStartToggle value={returnToStart} onChange={onReturnToStartChange} />
+            </div>
+          )}
+
+          {mode === "image" && (
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={isImageLoading}
+                className={cn(
+                  "w-full h-[120px] flex flex-col items-center justify-center rounded-[12px] border-[1.5px] border-dashed transition-all duration-200 gap-2",
+                  isImageLoading
+                    ? "border-accent-primary/40 bg-accent-primary/5 cursor-not-allowed"
+                    : "border-divider bg-bg-card hover:border-accent-primary/50"
+                )}
+              >
+                {imageThumbnail ? (
+                  <img src={imageThumbnail} alt="Uploaded" className="h-full w-full object-contain rounded-[10px] p-1" />
+                ) : (
+                  <>
+                    <ImageIcon className="w-7 h-7 text-text-muted" />
+                    <span className="text-[11px] font-sans font-medium uppercase tracking-[0.08em] text-text-secondary">
+                      Tap to upload image
+                    </span>
+                  </>
+                )}
+              </button>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleImageFile(file);
+                  e.target.value = "";
+                }}
+              />
+              {isImageLoading && imageProgress && (
+                <div className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-full w-fit mx-auto">
+                  <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">{imageProgress}</span>
+                </div>
+              )}
+              {imageOutlineCaptured && !isImageLoading && (
+                <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto">
+                  <Check className="w-3 h-3 text-success" />
+                  <span className="text-[10px] font-bold text-success uppercase tracking-wider">Outline Captured</span>
+                </div>
+              )}
+              {imageError && (
+                <div className="p-3 bg-danger/10 border border-danger/20 rounded-xl text-danger text-[11px] font-medium text-center">
+                  {imageError}
+                  <button
+                    type="button"
+                    onClick={() => { setImageError(null); setImageThumbnail(null); setImageOutlineCaptured(false); }}
+                    className="block mx-auto mt-1 text-[10px] underline text-danger/70 hover:text-danger"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </motion.div>
