@@ -1,7 +1,7 @@
 // src/components/RouteSettings.tsx
 import { cn } from "@/src/lib/utils";
 import { MapPin, ChevronDown, ChevronUp } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -32,7 +32,7 @@ export default function RouteSettings({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (showSuggestions && inputRef.current) {
       const rect = inputRef.current.getBoundingClientRect();
       setDropdownRect({ top: rect.bottom + 8, left: rect.left, width: rect.width });
