@@ -205,6 +205,7 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
             }
         }
         // 4. Call Gemini via Vertex AI (ADC — no API key required)
+        // Vision uses VISION_SYSTEM_PROMPT, not raw.prompt (the client's prompt exists only to satisfy firestore.rules).
         const text = raw.type === "vision"
             ? await callGeminiWithRetry(VISION_SYSTEM_PROMPT, { data: raw.imageBase64, mimeType: raw.mimeType })
             : await callGeminiWithRetry(prompt);

@@ -47,6 +47,7 @@ export async function imageToOutline(
     type: "vision",
     imageBase64: base64,
     mimeType,
+    // Required by firestore.rules (all jobs need a non-empty prompt); the backend ignores this for vision jobs and uses VISION_SYSTEM_PROMPT.
     prompt: VISION_PROMPT,
     cacheKey,
     createdAt: serverTimestamp(),
