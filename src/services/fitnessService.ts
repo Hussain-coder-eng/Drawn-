@@ -26,7 +26,7 @@ export class FitnessService {
   scoreFidelity(routedPoints: Point[], mode: string, idealPoints: Point[]): number {
     if (mode === 'premade') {
       return this.calculateFrechetFidelity(idealPoints, routedPoints);
-    } else if (mode === 'draw') {
+    } else if (mode === 'draw' || mode === 'image') {
       return this.calculateDTWFidelity(idealPoints, routedPoints);
     }
     return 50; // text mode — no geometric fidelity target
@@ -51,7 +51,7 @@ export class FitnessService {
         };
       }
       const stageNodes = (stage.nodeIds || [])
-        .map(id => nodeMap.get(id))
+        .map(id => nodeMap.get(String(id)))
         .filter((n): n is { lat: number; lng: number } => !!n);
 
       if (stageNodes.length < 2) {
@@ -87,9 +87,9 @@ export class FitnessService {
       };
     });
 
-    const overallFitness = Math.round(
-      stageScores.reduce((sum, s) => sum + s.overallStageScore, 0) / stageScores.length
-    );
+    const overallFitness = stageScores.length === 0
+      ? 0
+      : Math.round(stageScores.reduce((sum, s) => sum + s.overallStageScore, 0) / stageScores.length);
 
     return {
       overallFitness,
@@ -119,7 +119,7 @@ export class FitnessService {
       if (minDist > maxDev) maxDev = minDist;
     });
 
-    const score = Math.max(0, 100 - (maxDev * 500)); // 200m deviation = 0 score
+    const score = Math.max(0, 100 - (maxDev * 200)); // 500m deviation = 0 score
     return Math.round(score);
   }
 

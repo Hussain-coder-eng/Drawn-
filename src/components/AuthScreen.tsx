@@ -1,17 +1,15 @@
 interface AuthScreenProps {
   onGoogleLogin: () => void;
-  onGuest: () => void;
   isLoggingIn: boolean;
   error: string | null;
 }
 
-export default function AuthScreen({ onGoogleLogin, onGuest, isLoggingIn, error }: AuthScreenProps) {
+export default function AuthScreen({ onGoogleLogin, isLoggingIn, error }: AuthScreenProps) {
   return (
     <div
       data-testid="auth-screen"
       className="fixed inset-0 z-[9999] bg-[#0f0f13] flex flex-col items-center justify-center px-8"
     >
-      {/* Wordmark */}
       <div className="mb-12 text-center">
         <h1 className="text-[56px] font-display font-bold tracking-tighter text-white uppercase italic leading-none">
           Draw<span className="text-accent-primary">n</span>
@@ -20,44 +18,24 @@ export default function AuthScreen({ onGoogleLogin, onGuest, isLoggingIn, error 
           Draw your run.
         </p>
       </div>
-
-      {/* Animated route preview */}
       <div className="mb-12 w-[200px] h-[120px]">
         <svg viewBox="0 0 200 120" className="w-full h-full">
           <rect width="200" height="120" rx="12" fill="#18181f" />
-          {/* Grid lines for map feel */}
           <line x1="0" y1="40" x2="200" y2="40" stroke="#2a2a38" strokeWidth="1" />
           <line x1="0" y1="80" x2="200" y2="80" stroke="#2a2a38" strokeWidth="1" />
           <line x1="66" y1="0" x2="66" y2="120" stroke="#2a2a38" strokeWidth="1" />
           <line x1="133" y1="0" x2="133" y2="120" stroke="#2a2a38" strokeWidth="1" />
-          {/* Animated circle trace */}
-          <circle
-            cx="100" cy="60" r="36"
-            fill="none"
-            stroke="#FF2D6B"
-            strokeWidth="2.5"
-            strokeDasharray="226"
-            strokeDashoffset="226"
-            strokeLinecap="round"
-          >
-            <animate
-              attributeName="stroke-dashoffset"
-              from="226"
-              to="0"
-              dur="2.5s"
-              repeatCount="indefinite"
-              calcMode="ease"
-            />
+          <circle cx="100" cy="60" r="36" fill="none" stroke="#FF2D6B" strokeWidth="2.5"
+            strokeDasharray="226" strokeDashoffset="226" strokeLinecap="round">
+            <animate attributeName="stroke-dashoffset" from="226" to="0"
+              dur="2.5s" repeatCount="indefinite" calcMode="ease" />
           </circle>
         </svg>
       </div>
-
-      {/* Buttons */}
       <div className="w-full max-w-[320px] space-y-3">
         {error && (
           <p className="text-danger text-[12px] text-center font-medium">{error}</p>
         )}
-
         <button
           data-testid="google-login-btn"
           onClick={onGoogleLogin}
@@ -72,16 +50,7 @@ export default function AuthScreen({ onGoogleLogin, onGuest, isLoggingIn, error 
           </svg>
           {isLoggingIn ? "Signing in…" : "Continue with Google"}
         </button>
-
-        <button
-          data-testid="guest-btn"
-          onClick={onGuest}
-          className="w-full h-[48px] rounded-full border border-accent-primary/40 flex items-center justify-center text-[14px] font-sans font-medium text-accent-primary hover:bg-accent-primary/10 transition-all"
-        >
-          Continue as Guest
-        </button>
       </div>
-
       <p className="mt-8 text-[11px] text-text-muted text-center">
         By continuing you agree to our Terms &amp; Privacy
       </p>

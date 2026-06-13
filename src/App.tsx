@@ -8,7 +8,7 @@ import RouteSettings from "./components/RouteSettings";
 import ResultCard from "./components/ResultCard";
 import MapComponent from "./components/MapComponent";
 import GenerationProgress from "./components/GenerationProgress";
-import { InputMode, DrawnState } from "./types";
+import { InputMode, DrawnState, DebugInfo } from "./types";
 import { SHAPES } from "./constants";
 
 // Firebase imports
@@ -29,9 +29,12 @@ import {
 // Services and Libs
 import { RoutingService } from "./services/routingService";
 import { RateLimiter } from "./services/rateLimiter";
-import { GeminiService, GeminiStagedResult } from "./services/geminiService";
-import { OverpassService, OSMNode } from "./services/overpassService";
-import { FitnessService, RouteFitness } from "./services/fitnessService";
+import { GeminiService } from "./services/geminiService";
+import { OverpassService } from "./services/overpassService";
+import { FitnessService } from "./services/fitnessService";
+import { checkFeasibility } from "./services/feasibilityService";
+import { snapIdealPathToRoads } from "./services/nodeSnapService";
+import { graphRouteShape } from "./services/graphRoutingService";
 import {
   SHAPE_SCRIPTS,
   getLetterScript,
@@ -55,17 +58,18 @@ import {
   generateArrow,
   generateLightning,
   scaleAndCenter,
+  computeBboxDiagonal,
   NormalizedPoint,
   adaptiveSimplify,
   SHAPE_SIMPLIFICATION_CONFIG,
-  resamplePolylinePoints,
   projectShapeToLatLng,
+  isClosedShape,
 } from "./lib/shapeMath";
+import * as turf from "@turf/turf";
 import { downloadGPX } from "./lib/gpxExport";
 import { validateDistance, validateText } from "./lib/validation";
 import { preprocessorService } from "./services/preprocessorService";
 import { composeWordPath } from "./lib/gpsFont";
-import { buildStageScript } from "./lib/stageService";
 import { findBestOrientation } from "./services/optimizationService";
 import { useNudgeInterface } from "./hooks/useNudgeInterface";
 import { NudgeMap } from "./components/NudgeMap";
@@ -76,8 +80,6 @@ import { NavRoute, preprocessRouteForNavigation } from "./lib/navigationService"
 // Global limiters
 const osrmLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60000 });
 
-/** Max vertices for AI stage script only (avoids hundreds of Gemini stages × huge prompts). */
-const MAX_AI_SCRIPT_POINTS = 41;
 const routingService = new RoutingService(import.meta.env.VITE_OPENROUTESERVICE_API_KEY);
 const geminiService = new GeminiService();
 const overpassService = new OverpassService();
@@ -93,7 +95,6 @@ interface SavedRoute extends DrawnState {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [guestMode, setGuestMode] = useState(false);
   const [userLocation, setUserLocation] = useState<Point>({ lat: 40.7128, lng: -74.006 });
   const [sheetExpanded, setSheetExpanded] = useState(false);
 
@@ -112,8 +113,10 @@ export default function App() {
     drawnPath: [],
     normalizedDrawnPath: [],
     nodeMap: new Map(),
+    returnToStart: false,
   });
   const [isNudging, setIsNudging] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
 
   const [history, setHistory] = useState<DrawnState[]>([]);
   const [redoStack, setRedoStack] = useState<DrawnState[]>([]);
@@ -143,6 +146,7 @@ export default function App() {
     failingStages: [],
   });
   const lastGenerationTime = useRef<number>(0);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleStartRunFlow = async () => {
     if (!state.snappedCoords || state.snappedCoords.length === 0) return;
@@ -256,10 +260,15 @@ export default function App() {
       const baseRadiusMeters = Math.max(800, Math.round((distInKm / (2 * Math.PI)) * 1.3 * 1000));
 
       const timer = setTimeout(() => {
+        prefetchTimerRef.current = null;
         overpassService.fetchRoadNetwork(userLocation, baseRadiusMeters).catch(() => {});
       }, 2000);
+      prefetchTimerRef.current = timer;
 
-      return () => clearTimeout(timer);
+      return () => {
+        clearTimeout(timer);
+        prefetchTimerRef.current = null;
+      };
     }
   }, [userLocation, state.distance, state.unit, isAuthReady]);
 
@@ -275,8 +284,8 @@ export default function App() {
   }, []);
 
   const handleGenerate = async () => {
-    if (!user && !guestMode) {
-      setError("Please sign in or continue as guest to generate a route.");
+    if (!user) {
+      setError("Please sign in to generate a route.");
       return;
     }
 
@@ -284,6 +293,12 @@ export default function App() {
     if (now - lastGenerationTime.current < 5000) {
       setError("Please wait a few seconds before generating again.");
       return;
+    }
+
+    // Cancel any pending prefetch so it doesn't race with the real fetch
+    if (prefetchTimerRef.current !== null) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
     }
 
     setError(null);
@@ -326,6 +341,12 @@ export default function App() {
           throw new Error("Please draw a shape on the canvas first.");
         }
         normalizedPoints = state.normalizedDrawnPath;
+      } else if (state.mode === "image") {
+        shapeLabel = "Image Route";
+        if (state.normalizedDrawnPath.length < 2) {
+          throw new Error("Please upload an image to trace first.");
+        }
+        normalizedPoints = state.normalizedDrawnPath;
       }
 
       // 2. Adaptive Simplification
@@ -334,7 +355,17 @@ export default function App() {
       const simplifiedPoints = adaptiveSimplify(normalizedPoints, config).points;
 
       setLoadingMessage("Fetching local road network...");
-      const baseRadiusMeters = Math.max(800, Math.round((distInKm / (2 * Math.PI)) * 1.3 * 1000));
+      const previewPoints = scaleAndCenter(
+        simplifiedPoints.map(p => ({ lat: p.y, lng: p.x })),
+        userLocation,
+        distInKm
+      );
+      const shapeHalfDiagonalM = (computeBboxDiagonal(previewPoints) / 2) * 1000;
+      const circleHeuristicM = (distInKm / (2 * Math.PI)) * 1.3 * 1000;
+      const baseRadiusMeters = Math.max(
+        800,
+        Math.round(Math.max(circleHeuristicM, shapeHalfDiagonalM * 1.2))
+      );
 
       let network = await overpassService.fetchRoadNetwork(userLocation, baseRadiusMeters, (msg) => {
         setLoadingMessage(msg);
@@ -364,130 +395,112 @@ export default function App() {
         state.mode
       );
 
-      // 4. Build Stage Script (dense shapes → many edges; cap polyline for AI/Gemini only)
-      const aiPathForStages =
-        bestConfig.projectedPoints.length <= MAX_AI_SCRIPT_POINTS
-          ? bestConfig.projectedPoints
-          : resamplePolylinePoints(bestConfig.projectedPoints, MAX_AI_SCRIPT_POINTS);
+      // 4b. Feasibility gate — bail early if road density is too low for this shape/location
+      checkFeasibility(network, bestConfig.projectedPoints);
+      setCurrentScriptStages(0);
 
-      const stages = buildStageScript(
-        aiPathForStages.map(p => ({ x: p.lng, y: p.lat })),
-        distInKm
-      );
-      setCurrentScriptStages(stages.length);
+      // Determine anchor for closed-loop shapes
+      const closed =
+        isClosedShape(state.mode, state.selectedShape, state.normalizedDrawnPath) ||
+        state.returnToStart;
 
-      // 5. AI Node Selection (Gemini)
-      const startNode = overpassService.getRelevantNodes(network.nodes, [userLocation], network.edgeMap, 1)[0];
-      const sampledNodes = overpassService.getRelevantNodes(network.nodes, bestConfig.projectedPoints, network.edgeMap, 400);
+      let forcedAnchor: Point | undefined;
+      if (closed) {
+        // Anchor the loop to the nearest point on the ideal perimeter, not the user's GPS.
+        // Using the user's position (often near the shape's center) pulls the loop inward
+        // and clips the arms farthest from the user.
+        const idealLine = turf.lineString(
+          bestConfig.projectedPoints.map((p: Point) => [p.lng, p.lat])
+        );
+        const nearestOnIdeal = turf.nearestPointOnLine(
+          idealLine,
+          turf.point([userLocation.lng, userLocation.lat])
+        );
+        const idealAnchor: Point = {
+          lat: nearestOnIdeal.geometry.coordinates[1],
+          lng: nearestOnIdeal.geometry.coordinates[0],
+        };
+        const [startOnRoad] = await routingService.batchSnap([idealAnchor]);
+        forcedAnchor = startOnRoad;
+      }
 
-      const totalIdealPoints = aiPathForStages;
-      let cumulativePct = 0;
-      const idealStagePaths: Point[][] = stages.map((stage) => {
-        const startFrac = cumulativePct / 100;
-        cumulativePct += stage.distancePct;
-        const endFrac = cumulativePct / 100;
-        const n = totalIdealPoints.length;
-        const startIdx = Math.floor(startFrac * (n - 1));
-        const endIdx = Math.min(Math.ceil(endFrac * (n - 1)), n - 1);
-        return totalIdealPoints.slice(startIdx, endIdx + 1);
-      });
-      const stageNodePools: OSMNode[][] = stages.map((_, i) =>
-        overpassService.getNodesForStage(sampledNodes, idealStagePaths[i], 400)
-      );
+      // 5. Algorithmic snap routing — no AI required
+      setGenerationProgress({ attempt: 1, maxAttempts: 3, fitnessScore: null, failingStages: [] });
 
-      let attempt = 1;
-      let result: GeminiStagedResult | null = null;
-      let fitness: RouteFitness | null = null;
-      const maxAttempts = 2;
+      const WAYPOINT_COUNTS = [30, 45, 20] as const;
+      let bestFitness = 0;
+      let bestRoutedPoints: Point[] | null = null;
+      let bestSnappedWaypoints: Point[] | null = null;
 
-      while (attempt <= maxAttempts) {
-        setGenerationProgress(prev => ({ ...prev, attempt }));
-        setLoadingMessage(`Laying out your ${shapeLabel} — attempt ${attempt} of ${maxAttempts}...`);
-
-        const aiStages = stages.map(s => ({
-          stage: s.stageIndex + 1,
-          direction: s.compassLabel,
-          turn: s.turnType as any,
-          distancePct: s.distancePct,
-          description: `Move ${s.compassLabel}`
-        }));
-
-        setLoadingMessage("Selecting route nodes — contacting AI...");
-        if (attempt === 1) {
-          result = await geminiService.selectNodesStaged(
-            stageNodePools,
-            aiStages,
-            shapeLabel,
-            distInKm,
-            startNode.id,
-            bestConfig.projectedPoints,
-            idealStagePaths,
-            (msg) => setLoadingMessage(msg)
-          );
-        } else if (result && fitness) {
-          result = await geminiService.rerouteFailingStages(
-            result,
-            fitness,
-            stageNodePools,
-            aiStages,
-            idealStagePaths,
-            distInKm,
-            shapeLabel,
-            network.nodeMap,
-            (msg) => setLoadingMessage(msg)
-          );
-        }
-
-        if (!result || !result.stages) throw new Error("AI failed to generate a valid route structure.");
-
-        // 6. Anchor Point Locking (search only AI-relevant nodes — full nodeMap × all shape points freezes UI)
-        setLoadingMessage("Routing on real streets...");
-        const idealAnchors = bestConfig.projectedPoints.map((p, i) => ({ ...p, stageIndex: i }));
-        const lockedAnchors = routingService.lockAnchorPointsToNodes(
-          idealAnchors,
-          network.nodeMap,
-          sampledNodes
+      for (let attempt = 0; attempt < WAYPOINT_COUNTS.length; attempt++) {
+        setGenerationProgress(prev => ({ ...prev, attempt: attempt + 1 }));
+        setLoadingMessage(
+          attempt === 0
+            ? `Snapping ${shapeLabel} to roads...`
+            : `Refining route (pass ${attempt + 1} of 3)...`
         );
 
-        // 7. Route with Locked Waypoints
-        // Anchor the route to the user's start location: prepend and append the nearest
-        // OSM node to userLocation so the route always begins and ends where they are.
-        const waypointArray = routingService.buildOSRMWaypointArray(result.stages, lockedAnchors, network.nodeMap);
-        const startPoint = { lat: startNode.lat, lng: startNode.lng };
-        const anchoredWaypointArray = [startPoint, ...waypointArray, startPoint];
-        const routingResult = await routingService.routeWithLockedWaypoints(anchoredWaypointArray);
+        const snappedWaypoints = await snapIdealPathToRoads(
+          bestConfig.projectedPoints,
+          routingService,
+          WAYPOINT_COUNTS[attempt],
+          forcedAnchor
+        );
 
+        setLoadingMessage("Routing on real streets...");
+        const routingResult = await graphRouteShape(
+          snappedWaypoints,
+          bestConfig.projectedPoints,
+          network.nodeMap,
+          network.edgeMap,
+          routingService
+        );
         const routedPoints = routingResult.polylineCoords.map(c => ({ lat: c[1], lng: c[0] }));
 
-        const stageScore = fitnessService.scoreRoute(result.stages, aiStages, network.nodeMap, distInKm);
         const fidelityScore = fitnessService.scoreFidelity(routedPoints, state.mode, bestConfig.projectedPoints);
-        const overallFitness = Math.round((stageScore.overallFitness * 0.6) + (fidelityScore * 0.4));
-        fitness = {
-          ...stageScore,
-          overallFitness,
-          passed: overallFitness >= 70
-        };
 
         setGenerationProgress(prev => ({
           ...prev,
-          fitnessScore: fitness?.overallFitness || 0,
-          failingStages: fitness?.failingStages?.map(s => s.stageNumber) || []
+          fitnessScore: fidelityScore,
+          failingStages: [],
         }));
 
-        if (fitness.passed) {
-          updateState({
-            isGenerating: false,
-            hasResult: true,
-            idealCoords: bestConfig.projectedPoints,
-            snappedCoords: routedPoints,
-            routeFidelity: fitness.overallFitness,
-            distance: validDist,
-            textInput: state.textInput,
-            nodeMap: network.nodeMap
-          }, true);
-          break;
+        if (fidelityScore > bestFitness) {
+          bestFitness = fidelityScore;
+          bestRoutedPoints = routedPoints;
+          bestSnappedWaypoints = snappedWaypoints;
         }
-        attempt++;
+
+        if (fidelityScore >= 70) break;
+        if (attempt === 0 && fidelityScore >= 50) break;
+        if (attempt === 1 && fidelityScore >= 40) break;
+      }
+
+      if (!bestRoutedPoints) {
+        throw new Error("Failed to generate a route. Please try again.");
+      }
+
+      const debugInfo: DebugInfo = {
+        idealPath: bestConfig.projectedPoints,
+        snappedWaypoints: bestSnappedWaypoints ?? [],
+      };
+
+      updateState({
+        isGenerating: false,
+        hasResult: true,
+        idealCoords: bestConfig.projectedPoints,
+        snappedCoords: bestRoutedPoints,
+        routeFidelity: bestFitness,
+        distance: validDist,
+        textInput: state.textInput,
+        nodeMap: network.nodeMap,
+        debugInfo,
+      }, true);
+
+      if (bestFitness < 70) {
+        setGenerationError(
+          `Route quality is lower than expected (${bestFitness}% match). Try regenerating for a better result.`
+        );
       }
 
       lastGenerationTime.current = Date.now();
@@ -570,7 +583,7 @@ export default function App() {
       }
     } else if (state.mode === "text" && validText) {
       return composeWordPath(validText, distInKm, userLocation).waypoints;
-    } else if (state.mode === "draw" && state.normalizedDrawnPath.length > 0) {
+    } else if ((state.mode === "draw" || state.mode === "image") && state.normalizedDrawnPath.length > 0) {
       return projectShapeToLatLng(state.normalizedDrawnPath, userLocation.lat, userLocation.lng, distInKm / 2);
     }
     return [];
@@ -621,9 +634,17 @@ export default function App() {
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
         expanded={sheetExpanded}
         onModeSelect={(mode) => {
-          updateState({ mode, hasResult: false });
+          const modeChanged = mode !== state.mode;
+          updateState({
+            mode,
+            hasResult: false,
+            returnToStart: false,
+            ...(modeChanged ? { drawnPath: [], normalizedDrawnPath: [] } : {}),
+          });
           setSheetExpanded(true);
         }}
+        returnToStart={state.returnToStart}
+        onReturnToStartChange={(v) => updateState({ returnToStart: v })}
       />
 
       <RouteSettings
@@ -657,10 +678,9 @@ export default function App() {
   return (
     <div className="h-screen w-screen relative overflow-hidden bg-bg-primary font-sans">
       {/* Auth Gate */}
-      {!user && !guestMode && isAuthReady && (
+      {!user && isAuthReady && (
         <AuthScreen
           onGoogleLogin={login}
-          onGuest={() => setGuestMode(true)}
           isLoggingIn={isLoggingIn}
           error={error}
         />
@@ -675,6 +695,9 @@ export default function App() {
           isGenerating={state.isGenerating}
           hasResult={state.hasResult}
           center={userLocation}
+          debugInfo={state.debugInfo}
+          showDebug={showDebug}
+          onToggleDebug={() => setShowDebug(v => !v)}
         />
       </div>
 
@@ -863,7 +886,7 @@ export default function App() {
         setError("Network error. Please check your internet connection and try again.");
         setIsLoggingIn(false);
       } else {
-        setError(`Sign-in failed (${error.code || 'unknown'}). Please try again or continue as guest.`);
+        setError(`Sign-in failed (${error.code || 'unknown'}). Please try again.`);
         setIsLoggingIn(false);
       }
     }

@@ -1,8 +1,8 @@
-import { MapContainer, TileLayer, Polyline, Marker, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, Marker, CircleMarker, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { cn } from "@/src/lib/utils";
-import { InputMode } from "@/src/types";
+import { InputMode, DebugInfo } from "@/src/types";
 import { Maximize, ZoomIn, ZoomOut, Navigation } from "lucide-react";
 import { Point } from "@/src/lib/shapeMath";
 
@@ -17,6 +17,7 @@ const pulsingIcon = L.divIcon({
   iconAnchor: [0, 0],
 });
 
+
 interface MapComponentProps {
   mode: InputMode;
   idealCoords: Point[];
@@ -24,6 +25,9 @@ interface MapComponentProps {
   isGenerating: boolean;
   hasResult: boolean;
   center: Point;
+  debugInfo?: DebugInfo | null;
+  showDebug?: boolean;
+  onToggleDebug?: () => void;
 }
 
 // Component to handle map view updates
@@ -32,6 +36,27 @@ function MapController({ center, zoom }: { center: [number, number]; zoom: numbe
   useEffect(() => {
     map.setView(center, zoom);
   }, [center, zoom, map]);
+  return null;
+}
+
+// Component to recenter map on demand
+function RecenterMap({ trigger, center, snappedCoords, hasResult }: {
+  trigger: number;
+  center: [number, number];
+  snappedCoords: [number, number][];
+  hasResult: boolean;
+}) {
+  const map = useMap();
+  const prevTrigger = useRef(trigger);
+  useEffect(() => {
+    if (trigger === prevTrigger.current) return;
+    prevTrigger.current = trigger;
+    if (hasResult && snappedCoords.length > 1) {
+      map.fitBounds(L.latLngBounds(snappedCoords), { padding: [60, 60] });
+    } else {
+      map.setView(center, 13);
+    }
+  }, [trigger]);
   return null;
 }
 
@@ -54,8 +79,12 @@ export default function MapComponent({
   isGenerating,
   hasResult,
   center,
+  debugInfo,
+  showDebug = false,
+  onToggleDebug,
 }: MapComponentProps) {
   const [zoom, setZoom] = useState(13);
+  const [recenterTrigger, setRecenterTrigger] = useState(0);
 
   const leafletIdeal = useMemo(() => idealCoords.map(p => [p.lat, p.lng] as [number, number]), [idealCoords]);
   const leafletSnapped = useMemo(() => snappedCoords.map(p => [p.lat, p.lng] as [number, number]), [snappedCoords]);
@@ -74,6 +103,7 @@ export default function MapComponent({
         />
         <MapController center={[center.lat, center.lng]} zoom={zoom} />
         <FitBounds coords={leafletSnapped} hasResult={hasResult} />
+        <RecenterMap trigger={recenterTrigger} center={[center.lat, center.lng]} snappedCoords={leafletSnapped} hasResult={hasResult} />
 
         {/* Ghost Overlay */}
         {!hasResult && leafletIdeal.length > 0 && (
@@ -113,10 +143,41 @@ export default function MapComponent({
               }}
             />
             {/* Start/Finish Pulsing Dot */}
-            <Marker 
+            <Marker
               position={leafletSnapped[0]}
               icon={pulsingIcon}
             />
+          </>
+        )}
+
+        {/* Debug Overlay */}
+        {showDebug && debugInfo && (
+          <>
+            {/* Ideal path — blue dashed polyline */}
+            {debugInfo.idealPath.length > 1 && (
+              <Polyline
+                positions={debugInfo.idealPath.map(p => [p.lat, p.lng] as [number, number])}
+                pathOptions={{
+                  color: '#3b82f6',
+                  weight: 2,
+                  opacity: 0.6,
+                  dashArray: '4 4',
+                }}
+              />
+            )}
+            {/* Snapped waypoints — flat orange circles */}
+            {debugInfo.snappedWaypoints.map((node, idx) => (
+              <CircleMarker
+                key={`debug-snap-${idx}`}
+                center={[node.lat, node.lng]}
+                radius={6}
+                pathOptions={{ color: '#f97316', fillColor: '#f97316', fillOpacity: 0.9, weight: 1.5 }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} opacity={0.9}>
+                  Waypoint {idx + 1}
+                </Tooltip>
+              </CircleMarker>
+            ))}
           </>
         )}
       </MapContainer>
@@ -124,27 +185,48 @@ export default function MapComponent({
       {/* Floating Controls */}
       <div className="absolute top-6 right-6 z-[1000] flex flex-col gap-2">
         <div className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] overflow-hidden shadow-2xl">
-          <button 
+          <button
+            type="button"
             onClick={() => setZoom(z => z + 1)}
+            aria-label="Zoom in"
             className="p-3 hover:bg-white/5 text-white transition-colors border-b border-divider"
           >
-            <ZoomIn className="w-5 h-5" />
+            <ZoomIn className="w-5 h-5" aria-hidden="true" />
           </button>
-          <button 
+          <button
+            type="button"
             onClick={() => setZoom(z => z - 1)}
+            aria-label="Zoom out"
             className="p-3 hover:bg-white/5 text-white transition-colors"
           >
-            <ZoomOut className="w-5 h-5" />
+            <ZoomOut className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
-        <button 
-          onClick={() => {
-            // Recenter logic
-          }}
+        <button
+          type="button"
+          onClick={() => setRecenterTrigger(t => t + 1)}
+          aria-label="Recenter map"
           className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] p-3 shadow-2xl hover:bg-white/5 text-white transition-colors"
         >
-          <Navigation className="w-5 h-5" />
+          <Navigation className="w-5 h-5" aria-hidden="true" />
         </button>
+        {onToggleDebug && (
+          <button
+            type="button"
+            onClick={onToggleDebug}
+            title="Toggle debug overlay"
+            aria-pressed={showDebug}
+            aria-label={showDebug ? "Hide debug overlay" : "Show debug overlay"}
+            className={cn(
+              "bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] px-3 py-2 shadow-2xl text-[11px] font-mono font-semibold uppercase tracking-wider transition-colors",
+              showDebug
+                ? "text-blue-400 border-blue-500/50 bg-blue-900/30"
+                : "text-text-secondary hover:bg-white/5 hover:text-white"
+            )}
+          >
+            Debug
+          </button>
+        )}
       </div>
 
       {/* Bottom Right Info */}

@@ -86,11 +86,11 @@ service cloud.firestore {
              data.uid == request.auth.uid &&
              data.label is string && data.label.size() > 0 && data.label.size() < 100 &&
              data.mode in ['shapes', 'text', 'draw'] &&
-             data.distance is number && data.distance > 0 &&
+             data.distance is number && data.distance > 0 && data.distance <= 200 &&
              data.unit in ['mi', 'km'] &&
              data.timestamp is number &&
-             (data.idealCoords is list || !('idealCoords' in data)) &&
-             (data.snappedCoords is list || !('snappedCoords' in data));
+             (!('idealCoords' in data) || (data.idealCoords is list && data.idealCoords.size() <= 2000)) &&
+             (!('snappedCoords' in data) || (data.snappedCoords is list && data.snappedCoords.size() <= 10000));
     }
 
     function isValidRateLimit(data) {
@@ -102,11 +102,12 @@ service cloud.firestore {
     function isValidRun(data) {
       return data.keys().hasAll(['userId', 'shapeName', 'distanceM', 'elapsedSeconds', 'completedAt']) &&
              data.userId == request.auth.uid &&
-             data.shapeName is string &&
-             data.distanceM is number &&
-             data.elapsedSeconds is number &&
+             data.shapeName is string && data.shapeName.size() > 0 && data.shapeName.size() < 50 &&
+             data.distanceM is number && data.distanceM >= 0 && data.distanceM <= 500000 &&
+             data.elapsedSeconds is number && data.elapsedSeconds >= 0 && data.elapsedSeconds <= 86400 &&
+             (!('avgPaceSecPerKm' in data) || (data.avgPaceSecPerKm is number && data.avgPaceSecPerKm >= 0 && data.avgPaceSecPerKm <= 7200)) &&
              data.completedAt is timestamp &&
-             (data.completedPolyline is list || !('completedPolyline' in data));
+             (!('completedPolyline' in data) || (data.completedPolyline is list && data.completedPolyline.size() <= 10000));
     }
 
     // ===============================================================
@@ -136,6 +137,45 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
       allow create: if isAuthenticated() && isValidRun(request.resource.data);
       allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /jobs/{jobId} {
+      allow create: if isAuthenticated()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == "pending"
+        && request.resource.data.prompt is string
+        && request.resource.data.prompt.size() > 0
+        && request.resource.data.prompt.size() < 50000
+        && request.resource.data.cacheKey is string
+        && request.resource.data.cacheKey.size() > 0
+        && request.resource.data.cacheKey.size() <= 500
+        && (
+          !("type" in request.resource.data)
+          // vision jobs: image up to ~1MB base64 (headroom below Firestore 1 MiB doc limit)
+          || (
+            request.resource.data.type == "vision"
+            && request.resource.data.imageBase64 is string
+            && request.resource.data.imageBase64.size() > 0
+            && request.resource.data.imageBase64.size() <= 1000000
+            && request.resource.data.mimeType is string
+            && request.resource.data.mimeType.size() > 0
+            && request.resource.data.mimeType.matches('image/.*')
+          )
+        );
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Backend-only — admin SDK bypasses rules; clients must never read shared cache entries.
+    match /geminiCache/{key} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // Backend-only — admin SDK bypasses rules; clients must never read concurrency state.
+    match /config/{doc} {
+      allow read: if false;
+      allow write: if false;
     }
   }
 }

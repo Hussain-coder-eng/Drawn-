@@ -9,6 +9,8 @@ import {
   scaleShape,
   projectShapeToLatLng,
   NormalizedPoint,
+  computeBboxDiagonal,
+  isClosedShape,
 } from '../../src/lib/shapeMath';
 
 describe('shape generators produce normalized [0, 1] points', () => {
@@ -103,5 +105,68 @@ describe('projectShapeToLatLng', () => {
       expect(p.lng).toBeGreaterThan(-180);
       expect(p.lng).toBeLessThan(180);
     }
+  });
+});
+
+describe('computeBboxDiagonal', () => {
+  it('returns 0 for fewer than 2 points', () => {
+    expect(computeBboxDiagonal([])).toBe(0);
+    expect(computeBboxDiagonal([{ lat: 0, lng: 0 }])).toBe(0);
+  });
+
+  it('returns approximate diagonal for a degree-scale rectangle', () => {
+    // 1° lat × 1° lng at equator → diagonal ≈ 157km
+    const pts = [{ lat: 0, lng: 0 }, { lat: 1, lng: 1 }];
+    const d = computeBboxDiagonal(pts);
+    expect(d).toBeGreaterThan(100);
+    expect(d).toBeLessThan(200);
+  });
+
+  it('returns non-zero for a projected heart shape', () => {
+    const pts = projectShapeToLatLng(generateNormalizedHeart(), 51.5, -0.1, 2);
+    expect(computeBboxDiagonal(pts)).toBeGreaterThan(0);
+  });
+});
+
+describe('isClosedShape', () => {
+  it('returns true for closed preset shapes', () => {
+    expect(isClosedShape('shapes', 'circle', [])).toBe(true);
+    expect(isClosedShape('shapes', 'heart', [])).toBe(true);
+    expect(isClosedShape('shapes', 'star', [])).toBe(true);
+    expect(isClosedShape('shapes', 'square', [])).toBe(true);
+    expect(isClosedShape('shapes', 'infinity', [])).toBe(true);
+  });
+
+  it('returns false for open preset shapes', () => {
+    expect(isClosedShape('shapes', 'arrow', [])).toBe(false);
+    expect(isClosedShape('shapes', 'lightning', [])).toBe(false);
+    expect(isClosedShape('shapes', null, [])).toBe(false);
+  });
+
+  it('returns false for text mode regardless of path', () => {
+    const path: NormalizedPoint[] = [{ x: 0, y: 0 }, { x: 1, y: 1 }];
+    expect(isClosedShape('text', null, path)).toBe(false);
+    expect(isClosedShape('text', 'heart', path)).toBe(false);
+  });
+
+  it('returns true for draw mode when first and last points are within 10% bbox diagonal', () => {
+    // Near-closed square: first=[0,0], last=[0.05,0.05], bbox diagonal=√2≈1.414, gap=√(0.05²+0.05²)≈0.071 < 0.1414
+    const path: NormalizedPoint[] = [
+      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0.05, y: 0.05 }
+    ];
+    expect(isClosedShape('draw', null, path)).toBe(true);
+  });
+
+  it('returns false for draw mode when first and last are far apart', () => {
+    // Open diagonal line: gap = √2 ≈ 1.414, which equals bbox diagonal → not < 10%
+    const path: NormalizedPoint[] = [
+      { x: 0, y: 0 }, { x: 0.5, y: 0.5 }, { x: 1, y: 1 }
+    ];
+    expect(isClosedShape('draw', null, path)).toBe(false);
+  });
+
+  it('returns false for draw mode with fewer than 2 points', () => {
+    expect(isClosedShape('draw', null, [])).toBe(false);
+    expect(isClosedShape('draw', null, [{ x: 0, y: 0 }])).toBe(false);
   });
 });

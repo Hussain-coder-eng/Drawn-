@@ -1,4 +1,5 @@
 import * as turf from "@turf/turf";
+import type { InputMode } from "../types";
 
 export interface Point {
   lat: number;
@@ -25,7 +26,9 @@ export const SHAPE_SIMPLIFICATION_CONFIG: Record<string, { epsilon: number, targ
   letterComplex:{ epsilon: 0.03, targetSegments: 8, minSegments: 6 },
   // Custom drawing
   draw:      { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
-  drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
+  drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
+  // Image outline (behaves like freehand draw downstream)
+  image:     { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
 };
 
 export function rdpSimplify(points: NormalizedPoint[], epsilon: number): NormalizedPoint[] {
@@ -147,7 +150,7 @@ export function generateNormalizedHeart(numPoints = 60): NormalizedPoint[] {
   for (let i = 0; i < numPoints; i++) {
     const t = (i / (numPoints - 1)) * Math.PI * 2;
     const x = 16 * Math.pow(Math.sin(t), 3);
-    const y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
     points.push({ x, y });
   }
   return normalizePoints(points);
@@ -296,9 +299,41 @@ export function generateLightning(center: Point, distanceKm: number): Point[] {
   return scaleAndCenter(generateNormalizedLightning().map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
 }
 
+export function computeBboxDiagonal(points: Point[]): number {
+  if (points.length < 2) return 0;
+  const lats = points.map(p => p.lat);
+  const lngs = points.map(p => p.lng);
+  const sw = turf.point([Math.min(...lngs), Math.min(...lats)]);
+  const ne = turf.point([Math.max(...lngs), Math.max(...lats)]);
+  return turf.distance(sw, ne, { units: 'kilometers' });
+}
+
 export function generateSquare(center: Point, distanceKm: number): Point[] {
   const points = [
     { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0, y: 0 }
   ];
   return scaleAndCenter(points.map(p => ({ lat: p.y, lng: p.x })), center, distanceKm);
+}
+
+export function isClosedShape(
+  mode: InputMode,
+  selectedShape: string | null,
+  normalizedDrawnPath: NormalizedPoint[]
+): boolean {
+  if (mode === 'shapes') {
+    return ['circle', 'heart', 'star', 'square', 'infinity'].includes(selectedShape ?? '');
+  }
+  if (mode === 'draw' && normalizedDrawnPath.length >= 2) {
+    const first = normalizedDrawnPath[0];
+    const last = normalizedDrawnPath[normalizedDrawnPath.length - 1];
+    const gap = Math.sqrt((first.x - last.x) ** 2 + (first.y - last.y) ** 2);
+    const xs = normalizedDrawnPath.map(p => p.x);
+    const ys = normalizedDrawnPath.map(p => p.y);
+    const bboxDiag = Math.sqrt(
+      (Math.max(...xs) - Math.min(...xs)) ** 2 +
+      (Math.max(...ys) - Math.min(...ys)) ** 2
+    );
+    return bboxDiag > 0 && gap < bboxDiag * 0.1;
+  }
+  return false;
 }

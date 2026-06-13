@@ -71,7 +71,28 @@ export class OverpassService {
           }
         };
       });
-      sessionStorage.setItem('overpass_cache', JSON.stringify(toSave));
+      try {
+        sessionStorage.setItem('overpass_cache', JSON.stringify(toSave));
+      } catch (quotaErr: any) {
+        // Storage quota exceeded — evict all but the most recent entry and retry once
+        if (quotaErr?.name === 'QuotaExceededError' || quotaErr?.code === 22) {
+          sessionStorage.removeItem('overpass_cache');
+          const entries = [...this.cache.entries()];
+          if (entries.length > 0) {
+            const newest = entries.sort((a, b) => b[1].timestamp - a[1].timestamp)[0];
+            const slim: any = {};
+            slim[newest[0]] = {
+              ...newest[1],
+              network: {
+                ...newest[1].network,
+                edgeMap: Object.fromEntries(newest[1].network.edgeMap),
+                nodeMap: Object.fromEntries(newest[1].network.nodeMap)
+              }
+            };
+            try { sessionStorage.setItem('overpass_cache', JSON.stringify(slim)); } catch { /* give up */ }
+          }
+        }
+      }
     } catch (e) {
       console.warn("Failed to save Overpass cache", e);
     }
@@ -84,10 +105,10 @@ export class OverpassService {
     "https://overpass.openstreetmap.fr/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.viatech.com.ua/api/interpreter",
-    "https://overpass.tiekoetter.com/api/interpreter",
-    "https://overpass.jojo-t.me/api/interpreter",
-    "https://overpass.nchc.org.tw/api/interpreter"
+    // Removed: overpass.osm.viatech.com.ua — ERR_NAME_NOT_RESOLVED
+    // Removed: overpass.tiekoetter.com — ERR_CERT_COMMON_NAME_INVALID
+    // Removed: overpass.jojo-t.me — ERR_NAME_NOT_RESOLVED
+    // Removed: overpass.nchc.org.tw — ERR_NAME_NOT_RESOLVED
   ];
 
   private getShuffledMirrors(): string[] {
@@ -176,12 +197,14 @@ export class OverpassService {
             throw new Error("No elements");
           }
 
-          // Success — abort all other in-flight requests
-          clearTimeout(globalTimeout);
+          // Abort all other in-flight requests (fetch is done for this mirror)
           controllers.forEach((c, cIdx) => { if (cIdx !== idx) c.abort(); });
+          // Clear global timeout now — we have the data, no point aborting remaining mirrors
+          clearTimeout(globalTimeout);
 
           onProgress?.("Processing map data in background...");
           const network = await this.processOSMDataWithWorker(data);
+
           this.cache.set(cacheKey, { network, timestamp: Date.now() });
           this.saveCache();
           return network;
@@ -205,10 +228,24 @@ export class OverpassService {
   private async processOSMDataWithWorker(data: any): Promise<RoadNetwork> {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('../workers/overpassWorker.ts', import.meta.url), { type: 'module' });
-      
+
+      const fallback = (reason: string) => {
+        worker.terminate();
+        console.warn(`[DEBUG] Worker ${reason} — falling back to main-thread processing`);
+        try {
+          resolve(this.processOSMData(data));
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      // Safety net: if worker hangs for any reason, fall back to synchronous processing
+      const timeout = setTimeout(() => fallback('timed out after 10s'), 10_000);
+
       worker.onmessage = (e) => {
+        clearTimeout(timeout);
         const { nodes, nodeMap, edgeMap, bounds } = e.data;
-        
+
         // Convert plain objects back to Maps
         const nMap = new Map<string, OSMNode>();
         for (const [k, v] of Object.entries(nodeMap)) {
@@ -224,9 +261,14 @@ export class OverpassService {
         resolve({ nodes, nodeMap: nMap, edgeMap: eMap, bounds });
       };
 
-      worker.onerror = (err) => {
-        worker.terminate();
-        reject(err);
+      worker.onerror = () => {
+        clearTimeout(timeout);
+        fallback('errored');
+      };
+
+      worker.onmessageerror = () => {
+        clearTimeout(timeout);
+        fallback('message deserialization failed');
       };
 
       worker.postMessage({ data });
@@ -355,18 +397,16 @@ export class OverpassService {
 
     if (inBounds.length >= 8) return inBounds;
 
-    // Fallback: 20 nearest nodes to stage midpoint
-    const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-    const midLng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
-    const midPt = turf.point([midLng, midLat]);
+    // Fallback: 20 nearest nodes to stage PATH (distributes across full arc)
+    const stageLine = turf.lineString(validPath.map(p => [p.lng, p.lat]));
 
     return [...allNodes]
       .filter(n =>
         typeof n.lat === 'number' && typeof n.lng === 'number' && !isNaN(n.lat) && !isNaN(n.lng)
       )
       .sort((a, b) =>
-        turf.distance(midPt, turf.point([a.lng, a.lat])) -
-        turf.distance(midPt, turf.point([b.lng, b.lat]))
+        turf.pointToLineDistance(turf.point([a.lng, a.lat]), stageLine, { units: 'meters' }) -
+        turf.pointToLineDistance(turf.point([b.lng, b.lat]), stageLine, { units: 'meters' })
       )
       .slice(0, 20);
   }

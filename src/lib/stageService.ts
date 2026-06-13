@@ -76,7 +76,7 @@ export function buildStageScript(simplifiedPoints: NormalizedPoint[], totalDista
     const len = Math.sqrt(dx * dx + dy * dy);
     return {
       ...s,
-      distancePct: Math.round((len / totalLength) * 100),
+      distancePct: Math.round((len / (totalLength || 1)) * 100),
       targetDistanceKm: (len / (totalLength || 1)) * totalDistanceKm
     };
   });

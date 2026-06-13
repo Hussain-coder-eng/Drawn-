@@ -73,7 +73,7 @@ export default function ResultCard({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 8, scale: 0.95 }}
                 transition={{ duration: 0.15 }}
-                className="absolute bottom-[64px] left-0 right-0 bg-bg-card border border-divider rounded-[16px] shadow-2xl overflow-hidden z-10"
+                className="absolute top-[64px] left-0 right-0 bg-bg-card border border-divider rounded-[16px] shadow-2xl overflow-hidden z-10"
               >
                 <button
                   onClick={() => { window.open(buildGoogleMapsUrl(snappedCoords), '_blank'); setShowExportMenu(false); }}
@@ -88,7 +88,7 @@ export default function ResultCard({
                   <span className="text-[16px]">🍎</span> Apple Maps
                 </button>
                 <button
-                  onClick={() => { handleCopyLink(); setShowExportMenu(false); }}
+                  onClick={() => { handleCopyLink(); setTimeout(() => setShowExportMenu(false), 1200); }}
                   className="w-full px-4 py-3 text-left text-[13px] font-sans text-white hover:bg-bg-subtle transition-colors flex items-center gap-3"
                 >
                   {copied ? <CheckCircle2 className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4 text-text-muted" />}

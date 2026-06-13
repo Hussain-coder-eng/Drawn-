@@ -61,7 +61,7 @@ export function useRunTracker({
     if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
     
     const totalElapsedSeconds = startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : 0;
-    const avgPaceSecPerKm = (totalElapsedSeconds / finalDistanceM) * 1000;
+    const avgPaceSecPerKm = finalDistanceM > 0 ? (totalElapsedSeconds / finalDistanceM) * 1000 : 0;
 
     const result = {
       totalDistanceM: finalDistanceM,

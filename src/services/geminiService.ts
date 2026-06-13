@@ -1,202 +1,54 @@
 import * as turf from "@turf/turf";
-import { GoogleGenAI, Type } from "@google/genai";
 import { jsonrepair } from "jsonrepair";
-import { Point } from "../lib/shapeMath";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { Point, computeBboxDiagonal } from "../lib/shapeMath";
 import { OSMNode } from "./overpassService";
 import { RouteStage } from "../lib/routeScripts";
 import { RouteFitness, StageScore } from "./fitnessService";
-import { RateLimiter } from "./rateLimiter";
-import { measureLatency } from "../lib/latency";
+import { auth, db } from "../firebase";
+import { pollJobResult } from "./jobPoller";
 
-const SYSTEM_PROMPT = `
-You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
-
-RULES:
-- Use ONLY provided node IDs.
-- Follow stages in strict order.
-- Each stage MUST travel in the specified compass direction.
-- PRIORITIZE "Visual Silhouette": Pick nodes that define the corners, curves, and apexes of the shape.
-- Select 4-8 Anchor Points per stage for high-fidelity tracing.
-- Final node of a stage MUST be the first node of the next stage.
-- Last node of the final stage MUST match the start node (closed loop).
-- Avoid backtracking. Every node must progress the route.
-- Every stage in the "stages" array MUST have a "nodeIds" array.
-
-Return ONLY JSON:
-{
-  "startNodeId": "1",
-  "stages": [
-    { "stageNumber": 1, "nodeIds": ["1", "2", "3"] },
-    { "stageNumber": 2, "nodeIds": ["3", "4", "5"] }
-  ]
+// Non-crypto hash for cache keys: combines two rolling hashes for ~64-bit width.
+// Synchronous and deterministic — same input always yields the same 16-char hex string.
+export function hashString(input: string): string {
+  let h1 = 5381 >>> 0;
+  let h2 = 52711 >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    h1 = (Math.imul(h1, 33) ^ c) >>> 0;
+    h2 = (Math.imul(h2, 31) ^ c) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
 }
-`;
-
-/**
- * Client-side abort for `generateContent`.
- * 25s per attempt with 1 retry keeps total worst-case under ~55s.
- */
-const GEMINI_REQUEST_TIMEOUT_MS = 25_000;
-const GEMINI_TIMEOUT_MAX_RETRIES = 1;
 
 export interface GeminiStagedResult {
   startNodeId: number;
   stages: { stageNumber: number; nodeIds: number[] }[];
+  anchorQualityFailed?: boolean;
+  anchorFeedback?: string;
 }
 
 export class GeminiService {
-  private rateLimiter: RateLimiter;
   private cache: Map<string, GeminiStagedResult> = new Map();
 
-  private static isAbortLikeError(err: unknown): boolean {
-    if (err == null || typeof err !== "object") return false;
-    const e = err as { name?: string; message?: string };
-    const name = e.name ?? "";
-    const msg = (e.message ?? "").toLowerCase();
-    if (name === "AbortError" || name === "TimeoutError") return true;
-    if (msg.includes("abort")) return true;
-    if (typeof DOMException !== "undefined" && err instanceof DOMException) {
-      if (err.name === "TimeoutError" || err.name === "AbortError") return true;
-      if (err.code === 20) return true; // DOMException.ABORT_ERR
-    }
-    return false;
-  }
+  private async submitGeminiJob(
+    prompt: string,
+    cacheKey: string,
+    onProgress?: (msg: string) => void
+  ): Promise<string> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("You must be signed in to generate a route.");
 
-  private static logGeminiFailure(context: string, err: unknown, extra: Record<string, unknown> = {}): void {
-    const payload: Record<string, unknown> = { context, ...extra };
-    if (err instanceof Error) {
-      payload.errorName = err.name;
-      payload.errorMessage = err.message;
-      payload.errorStack = err.stack;
-    } else {
-      payload.errorType = typeof err;
-      payload.errorString = String(err);
-    }
-    if (typeof DOMException !== "undefined" && err instanceof DOMException) {
-      payload.domException = true;
-      payload.domExceptionName = err.name;
-      payload.domExceptionCode = err.code;
-    }
-    const anyErr = err as { cause?: unknown };
-    if (anyErr?.cause !== undefined) {
-      const c = anyErr.cause;
-      payload.cause =
-        c instanceof Error ? { name: c.name, message: c.message } : c;
-    }
-    console.error("[Gemini]", payload);
-  }
+    const jobRef = await addDoc(collection(db, "jobs"), {
+      uid: user.uid,
+      status: "pending",
+      prompt,
+      cacheKey,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
 
-  constructor() {
-    // Limit to 5 requests per minute to stay well within free tier limits
-    this.rateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 60000 });
-  }
-
-  private getAI(): GoogleGenAI {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("Gemini API key is missing. Please check your settings.");
-    }
-    return new GoogleGenAI({ apiKey });
-  }
-
-  private static isNetworkError(err: unknown): boolean {
-    if (err == null || typeof err !== "object") return false;
-    const e = err as { name?: string; message?: string };
-    const name = (e.name ?? "").toLowerCase();
-    const msg = (e.message ?? "").toLowerCase();
-    // Covers: TypeError: Failed to fetch, NetworkError, ERR_NETWORK, etc.
-    return (
-      msg.includes("failed to fetch") ||
-      msg.includes("networkerror") ||
-      msg.includes("network error") ||
-      name === "networkerror" ||
-      msg.includes("err_network") ||
-      msg.includes("load failed") // Safari's equivalent of "Failed to fetch"; also fires on CORS errors — accepted as safe false-positive for this endpoint
-    );
-  }
-
-  private async callWithRetry(
-    fn: () => Promise<any>,
-    maxRetries = 6,
-    onProgress?: (msg: string) => void,
-    operationLabel?: string
-  ): Promise<any> {
-    let attempt = 0;
-    let timeoutAttempts = 0;
-    while (attempt < maxRetries) {
-      try {
-        return await fn();
-      } catch (error: any) {
-        attempt++;
-        console.error("[Gemini]", {
-          event: "callWithRetry_catch",
-          operationLabel,
-          attempt,
-          maxRetries,
-          isAbortLike: GeminiService.isAbortLikeError(error),
-          isNetworkError: GeminiService.isNetworkError(error),
-          errorName: error?.name,
-          errorMessage: error?.message,
-        });
-        const errorStr = JSON.stringify(error);
-        const isRateLimit = error.message?.includes("429") ||
-                            error.status === "RESOURCE_EXHAUSTED" ||
-                            errorStr.includes("429") ||
-                            errorStr.includes("RESOURCE_EXHAUSTED");
-
-        const isQuotaExceeded = errorStr.includes("exceeded your current quota") ||
-                                error.message?.includes("quota") ||
-                                error.message?.includes("RESOURCE_EXHAUSTED");
-
-        const isUnavailable = error.status === "UNAVAILABLE" ||
-                              errorStr.includes("503") ||
-                              errorStr.includes("UNAVAILABLE") ||
-                              error.message?.includes("503") ||
-                              error.message?.includes("high demand");
-
-        const isNetworkBlip = GeminiService.isNetworkError(error);
-        const isTimeout = GeminiService.isAbortLikeError(error);
-
-        if (isQuotaExceeded) {
-          const quotaMsg = "Gemini API Daily Quota Exceeded. The free tier has a limit on how many routes you can generate per day. You can try again tomorrow, or use the 'Fine-tune' feature to manually adjust your route if you have a partial result.";
-          throw new Error(quotaMsg);
-        }
-
-        // Timeout: allow at most GEMINI_TIMEOUT_MAX_RETRIES retries with a ~5s delay.
-        // Each attempt has a 25s timeout so total worst-case stays under ~55s.
-        if (isTimeout && timeoutAttempts < GEMINI_TIMEOUT_MAX_RETRIES) {
-          timeoutAttempts++;
-          const delay = 5000 + Math.random() * 1000;
-          const delaySec = Math.round(delay / 1000);
-          console.warn(`[DEBUG] Gemini Timeout. Retrying in ${Math.round(delay)}ms... (Timeout attempt ${timeoutAttempts}/${GEMINI_TIMEOUT_MAX_RETRIES})`);
-          onProgress?.(`AI is taking longer than expected — retrying in ${delaySec}s…`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          onProgress?.("AI is analyzing the road network...");
-          continue;
-        }
-
-        if ((isRateLimit || isUnavailable || isNetworkBlip) && attempt < maxRetries) {
-          // For 503 server overload: longer base delay (3s), capped at 15s. For 429/network: 0.5s base.
-          const baseMs = isUnavailable ? 3000 : 500;
-          const delay = Math.min(Math.pow(2, attempt - 1) * baseMs + Math.random() * 1000, isUnavailable ? 15000 : Infinity);
-          const delaySec = Math.round(delay / 1000);
-          if (isUnavailable) {
-            console.warn(`[DEBUG] Gemini Unavailable (503). Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`Gemini is busy — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
-          } else if (isNetworkBlip) {
-            console.warn(`[DEBUG] Gemini network error. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`Connection issue — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
-          } else {
-            console.warn(`[DEBUG] Gemini Rate Limit hit. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
-            onProgress?.(`AI rate limit reached — retrying in ${delaySec}s… (attempt ${attempt}/${maxRetries - 1})`);
-          }
-          await new Promise(resolve => setTimeout(resolve, delay));
-          onProgress?.("AI is analyzing the road network...");
-          continue;
-        }
-        throw error;
-      }
-    }
+    return pollJobResult(jobRef, { onProgress });
   }
 
   private samplePoints(points: Point[], n: number): Point[] {
@@ -237,6 +89,43 @@ export class GeminiService {
       `You are ~${distM}m ${dirLabel} of where you should be`;
   }
 
+  private computeAnchorFrechetKm(anchors: { lat: number; lng: number }[], ideal: Point[]): number {
+    if (anchors.length === 0 || ideal.length === 0) return 0;
+    let maxMinDist = 0;
+    for (const p of ideal) {
+      let minDist = Infinity;
+      for (const a of anchors) {
+        const d = turf.distance(turf.point([p.lng, p.lat]), turf.point([a.lng, a.lat]), { units: 'kilometers' });
+        if (d < minDist) minDist = d;
+      }
+      if (minDist !== Infinity && minDist > maxMinDist) maxMinDist = minDist;
+    }
+    return maxMinDist;
+  }
+
+  private computeAnchorFeedback(anchors: { lat: number; lng: number }[], ideal: Point[]): string {
+    if (anchors.length === 0 || ideal.length === 0) return '';
+    const aMinLat = Math.min(...anchors.map(p => p.lat));
+    const aMaxLat = Math.max(...anchors.map(p => p.lat));
+    const aMinLng = Math.min(...anchors.map(p => p.lng));
+    const aMaxLng = Math.max(...anchors.map(p => p.lng));
+    const iMinLat = Math.min(...ideal.map(p => p.lat));
+    const iMaxLat = Math.max(...ideal.map(p => p.lat));
+    const iMinLng = Math.min(...ideal.map(p => p.lng));
+    const iMaxLng = Math.max(...ideal.map(p => p.lng));
+    const latSpan = iMaxLat - iMinLat || 1;
+    const lngSpan = iMaxLng - iMinLng || 1;
+    const missing: string[] = [];
+    if (aMaxLat < iMinLat + latSpan * 0.3) missing.push('N');
+    if (aMinLat > iMaxLat - latSpan * 0.3) missing.push('S');
+    if (aMaxLng < iMinLng + lngSpan * 0.3) missing.push('W');
+    if (aMinLng > iMaxLng - lngSpan * 0.3) missing.push('E');
+    if (missing.length > 0) {
+      return `Previous selection missed the ${missing.join('/')} portion of the shape. Ensure anchors span the full extent.`;
+    }
+    return 'Previous selections were clustered — ensure anchors span the full shape boundary.';
+  }
+
   async selectNodesStaged(
     stageNodePools: OSMNode[][],
     script: RouteStage[],
@@ -250,24 +139,19 @@ export class GeminiService {
     if (!script || !Array.isArray(script)) {
       throw new Error("Invalid shape script provided to AI.");
     }
-    const ai = this.getAI();
-    const model = "gemini-2.5-flash";
 
     // 0. Check Cache
-    const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
-    if (this.cache.has(cacheKey)) {
+    // Both the Firestore job doc key and the in-memory key fold in the node-pool fingerprint
+    // via a deterministic hash, so different road networks with the same shape/distance/start
+    // never collide. The v2: prefix avoids replaying v1 entries cached without the fingerprint.
+    // Key stays ≤500 chars because the readable prefix is short and the hash is fixed 16 chars.
+    const nodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
+    const firestoreCacheKey = `v2:${shapeName}:${distanceKm}:${startNodeId}:${hashString(JSON.stringify({ script: script.map(s => s.stage), nodePoolHash }))}`;
+    const inMemoryCacheKey = firestoreCacheKey; // node pool already folded in
+    if (this.cache.has(inMemoryCacheKey)) {
       console.log("[DEBUG] Returning cached Gemini result");
-      return this.cache.get(cacheKey)!;
+      return this.cache.get(inMemoryCacheKey)!;
     }
-
-    // 1. Rate Limit Check
-    try {
-      await this.rateLimiter.check();
-    } catch (e: any) {
-      throw new Error(`AI is busy: ${e.message}`);
-    }
-
-    onProgress?.("AI is analyzing the road network...");
 
     // Build a global index map across all stage pools (deduplicating shared nodes)
     const idToIndex = new Map<number, string>();
@@ -290,40 +174,37 @@ export class GeminiService {
     }));
 
     // Sample 10 points from ideal path for shape reference
-    const idealPathSample = this.samplePoints(idealPath, 10);
+    const idealPathSample = this.samplePoints(idealPath, 5);
     const idealPathStr = idealPathSample
-      .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+      .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
       .join(' → ');
 
-    // Build per-stage blocks — cap at 80 nodes per stage to keep prompts fast.
+    // Build per-stage blocks — cap at 40 nodes per stage to keep prompts fast.
     // Nodes are sorted by proximity to the stage midpoint so the closest (most useful) ones are kept.
-    const MAX_NODES_PER_STAGE = 80;
+    const MAX_NODES_PER_STAGE = 40;
     const stageBlocks = stageDistances.map((s, i) => {
       const pool = stageNodePools[i] || [];
       const idealSubPath = idealStagePaths[i] || [];
-      const idealSubSampled = this.samplePoints(idealSubPath, 3);
+      const idealSubSampled = this.samplePoints(idealSubPath, 15);
       const idealSubStr = idealSubSampled
-        .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+        .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
 
-      // Trim pool to the N closest nodes to the stage midpoint
       let trimmedPool = pool;
       if (pool.length > MAX_NODES_PER_STAGE && idealSubPath.length > 0) {
-        const midLat = idealSubPath.reduce((s, p) => s + p.lat, 0) / idealSubPath.length;
-        const midLng = idealSubPath.reduce((s, p) => s + p.lng, 0) / idealSubPath.length;
+        const stageLine = turf.lineString(idealSubPath.map(p => [p.lng, p.lat]));
         trimmedPool = [...pool]
-          .sort((a, b) => {
-            const da = Math.hypot(a.lat - midLat, a.lng - midLng);
-            const db = Math.hypot(b.lat - midLat, b.lng - midLng);
-            return da - db;
-          })
+          .sort((a, b) =>
+            turf.pointToLineDistance(turf.point([a.lng, a.lat]), stageLine, { units: 'meters' }) -
+            turf.pointToLineDistance(turf.point([b.lng, b.lat]), stageLine, { units: 'meters' })
+          )
           .slice(0, MAX_NODES_PER_STAGE);
       }
 
       const nodesStr = trimmedPool
         .map(n => {
           const nodeIdx = idToIndex.get(n.id) || '?';
-          return `${nodeIdx}: ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
+          return `${nodeIdx}: ${n.lat.toFixed(4)}, ${n.lng.toFixed(4)}`;
         })
         .join('\n');
       return `=== STAGE ${s.stage}: Move ${s.direction}, target ${s.targetDistanceKm.toFixed(2)}km ===\nIdeal path for this stage: ${idealSubStr}\nAvailable nodes (ID: lat, lng):\n${nodesStr}`;
@@ -339,88 +220,9 @@ ${stageBlocks}
 Preferred start node ID: ${aiStartNodeIndex}
 `;
 
-    let response;
-    const apiCallStartedAt = performance.now();
-    try {
-      console.info("[Gemini] request_meta", {
-        operation: "selectNodesStaged",
-        model,
-        promptCharLength: prompt.length,
-        stageCount: script.length,
-        stagePoolSizes: stageNodePools.map(p => p.length),
-        stagePoolSizesCapped: stageNodePools.map(p => Math.min(p.length, MAX_NODES_PER_STAGE)),
-        timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-      });
-      const { data: res } = await measureLatency("Gemini:GenerateContent", async () => {
-        return await this.callWithRetry(() => ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-            // Disable thinking: node selection is a deterministic lookup task,
-            // not a reasoning task. Thinking adds latency and token cost with
-            // no quality benefit for structured JSON output.
-            thinkingConfig: { thinkingBudget: 0 },
-            abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                startNodeId: { type: Type.STRING },
-                stages: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      stageNumber: { type: Type.INTEGER },
-                      nodeIds: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                      }
-                    },
-                    required: ["stageNumber", "nodeIds"]
-                  }
-                }
-              },
-              required: ["startNodeId", "stages"]
-            }
-          }
-        }), 4, onProgress, "selectNodesStaged");
-      }, { silent: true });
-      response = res;
-    } catch (apiError: any) {
-      const elapsedMs = Math.round(performance.now() - apiCallStartedAt);
-      GeminiService.logGeminiFailure("selectNodesStaged:generateContent", apiError, {
-        elapsedMs,
-        configuredTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-        isAbortLike: GeminiService.isAbortLikeError(apiError),
-      });
-      if (apiError.message?.includes("Quota Exceeded")) {
-        throw apiError;
-      }
-      const errorStr = JSON.stringify(apiError);
-      const isUnavailable = apiError.status === "UNAVAILABLE" ||
-                            errorStr.includes("503") ||
-                            errorStr.includes("UNAVAILABLE") ||
-                            apiError.message?.includes("high demand");
-      if (isUnavailable) {
-        throw new Error("Gemini is currently experiencing high demand. Please try again in a few moments.");
-      }
-      if (GeminiService.isAbortLikeError(apiError)) {
-        throw new Error(
-          `The AI request timed out after ${Math.round(GEMINI_REQUEST_TIMEOUT_MS / 1000)}s. Try again, or simplify the shape or map area.`
-        );
-      }
-      throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
-    }
+    onProgress?.("AI is analyzing the road network...");
+    const text = await this.submitGeminiJob(prompt, firestoreCacheKey, onProgress);
 
-    let text = response.text;
-    if (!text) {
-      console.error("[DEBUG] Gemini returned an empty response.", response);
-      throw new Error("Gemini returned an empty response.");
-    }
-    
     try {
       // Robust repair and parse
       const repaired = jsonrepair(text);
@@ -428,7 +230,7 @@ Preferred start node ID: ${aiStartNodeIndex}
       this.validateRawResult(result);
 
       // Map indices back to real OSM IDs
-      const finalResult = {
+      const finalResult: GeminiStagedResult = {
         startNodeId: indexToId.get(String(result.startNodeId)) || startNodeId,
         stages: result.stages.map((s: any) => ({
           stageNumber: s.stageNumber,
@@ -436,9 +238,40 @@ Preferred start node ID: ${aiStartNodeIndex}
         }))
       };
 
-      // Cache result
-      const cacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
-      this.cache.set(cacheKey, finalResult);
+      // Closed-loop enforcement: if last node ≠ first node and they're >50m apart, append start
+      const firstId = finalResult.stages[0]?.nodeIds[0];
+      const lastStage = finalResult.stages[finalResult.stages.length - 1];
+      const lastId = lastStage?.nodeIds[lastStage.nodeIds.length - 1];
+      if (firstId && lastId && firstId !== lastId) {
+        const firstNode = allUniqueNodes.get(firstId);
+        const lastNode = allUniqueNodes.get(lastId);
+        if (firstNode && lastNode) {
+          const gapM = turf.distance(
+            turf.point([firstNode.lng, firstNode.lat]),
+            turf.point([lastNode.lng, lastNode.lat]),
+            { units: 'meters' }
+          );
+          if (gapM > 50) {
+            lastStage.nodeIds.push(firstId);
+          }
+        }
+      }
+
+      // Anchor quality check: if anchors deviate >40% of shape bbox diagonal, flag for retry
+      const allAnchorNodes = finalResult.stages.flatMap(s =>
+        s.nodeIds.map(id => allUniqueNodes.get(id)).filter((n): n is OSMNode => !!n)
+      );
+      if (allAnchorNodes.length >= 2 && idealPath.length >= 2) {
+        const bboxDiagonal = computeBboxDiagonal(idealPath);
+        const frechetKm = this.computeAnchorFrechetKm(allAnchorNodes, idealPath);
+        if (bboxDiagonal > 0 && frechetKm / bboxDiagonal > 0.15) {
+          finalResult.anchorQualityFailed = true;
+          finalResult.anchorFeedback = this.computeAnchorFeedback(allAnchorNodes, idealPath);
+        }
+      }
+
+      // Cache result (use inMemoryCacheKey which includes node-pool fingerprint)
+      this.cache.set(inMemoryCacheKey, finalResult);
 
       return finalResult;
     } catch (e: any) {
@@ -459,16 +292,6 @@ Preferred start node ID: ${aiStartNodeIndex}
     nodeMap: Map<string, any>,
     onProgress?: (msg: string) => void
   ): Promise<GeminiStagedResult> {
-    const ai = this.getAI();
-    const model = "gemini-2.5-flash";
-
-    // Rate Limit Check
-    try {
-      await this.rateLimiter.check();
-    } catch (e: any) {
-      throw new Error(`AI is busy: ${e.message}`);
-    }
-
     onProgress?.("AI is refining the route...");
 
     // Rebuild global index map from all stage pools
@@ -496,13 +319,13 @@ Preferred start node ID: ${aiStartNodeIndex}
       const idealSubPath = idealStagePaths[stageIdx] || [];
       const targetDist = stageDistances[stageIdx]?.targetDistanceKm;
       const deviation = this.computeStageSpatialDeviation(s, previousResult, idealSubPath, nodeMap);
-      const idealSubStr = this.samplePoints(idealSubPath, 3)
-        .map(p => `[${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}]`)
+      const idealSubStr = this.samplePoints(idealSubPath, 15)
+        .map(p => `[${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}]`)
         .join(' → ');
       const nodesStr = pool
         .map(n => {
           const nodeIdx = idToIndex.get(n.id) || '?';
-          return `${nodeIdx}: ${n.lat.toFixed(5)}, ${n.lng.toFixed(5)}`;
+          return `${nodeIdx}: ${n.lat.toFixed(4)}, ${n.lng.toFixed(4)}`;
         })
         .join('\n');
 
@@ -525,90 +348,22 @@ Return a JSON object with a "stages" array containing ONLY the replanned stages.
 Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that stage's available nodes list.
 `;
 
-    let response;
-    const rerouteApiCallStartedAt = performance.now();
-    try {
-      console.info("[Gemini] request_meta", {
-        operation: "rerouteFailingStages",
-        model,
-        promptCharLength: reroutePrompt.length,
-        failingStageCount: (fitnessResult.failingStages || []).length,
-        scriptStageCount: script.length,
-        stagePoolSizes: stageNodePools.map(p => p.length),
-        timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-      });
-      const { data: rerouteRes } = await measureLatency("Gemini:RerouteStages", async () => {
-        return await this.callWithRetry(() => ai.models.generateContent({
-          model,
-          contents: reroutePrompt,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-            // Disable thinking: same rationale as selectNodesStaged — rerouting
-            // is a constrained lookup task, not a reasoning task.
-            thinkingConfig: { thinkingBudget: 0 },
-            abortSignal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                stages: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      stageNumber: { type: Type.INTEGER },
-                      nodeIds: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                      }
-                    },
-                    required: ["stageNumber", "nodeIds"]
-                  }
-                }
-              },
-              required: ["stages"]
-            }
-          }
-        }), 2, onProgress, "rerouteFailingStages");
-      }, { silent: true });
-      response = rerouteRes;
-    } catch (apiError: any) {
-      const elapsedMs = Math.round(performance.now() - rerouteApiCallStartedAt);
-      GeminiService.logGeminiFailure("rerouteFailingStages:generateContent", apiError, {
-        elapsedMs,
-        configuredTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
-        isAbortLike: GeminiService.isAbortLikeError(apiError),
-      });
-      if (apiError.message?.includes("Quota Exceeded")) {
-        throw apiError;
-      }
-      const errorStr = JSON.stringify(apiError);
-      const isUnavailable = apiError.status === "UNAVAILABLE" ||
-                            errorStr.includes("503") ||
-                            errorStr.includes("UNAVAILABLE") ||
-                            apiError.message?.includes("high demand");
-      if (isUnavailable) {
-        throw new Error("Gemini is currently experiencing high demand. Please try again in a few moments.");
-      }
-      if (GeminiService.isAbortLikeError(apiError)) {
-        throw new Error(
-          `The AI request timed out after ${Math.round(GEMINI_REQUEST_TIMEOUT_MS / 1000)}s. Try again, or simplify the shape or map area.`
-        );
-      }
-      throw new Error(`Failed to call the Gemini API: ${apiError.message || "Unknown error"}`);
-    }
+    const rerouteNodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
+    const rerouteCacheKey = `v2:reroute:${shapeName}:${distanceKm}:${previousResult.startNodeId}:${hashString(JSON.stringify({
+      failingStages: (fitnessResult.failingStages || [])
+        .map(s => ({ stageNumber: s.stageNumber, directionScore: s.directionScore, distanceScore: s.distanceScore }))
+        .sort((a, b) => a.stageNumber - b.stageNumber),
+      nodePoolHash: rerouteNodePoolHash,
+    }))}`;
 
-    let text = response.text;
-    if (!text) {
-      console.error("[DEBUG] Gemini returned an empty response.", response);
-      throw new Error("Gemini returned an empty response.");
-    }
+
+    onProgress?.("AI is refining the route...");
+    const text = await this.submitGeminiJob(reroutePrompt, rerouteCacheKey, onProgress);
 
     try {
       const repaired = jsonrepair(text);
       const result = JSON.parse(repaired);
-      
+
       // Basic validation of the new stages
       if (!result.stages || !Array.isArray(result.stages)) {
         throw new Error("AI returned invalid refinement data.");
@@ -641,9 +396,14 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
         return oldStage;
       });
 
+      const validMergedStages = mergedStages.filter(s => s.nodeIds && s.nodeIds.length > 0);
+      if (validMergedStages.length === 0) {
+        throw new Error("AI refinement produced no valid stages.");
+      }
+
       return {
         startNodeId: previousResult.startNodeId,
-        stages: mergedStages
+        stages: validMergedStages
       };
     } catch (e: any) {
       console.error("[DEBUG] Failed to parse Gemini refinement response:", text, e);
@@ -661,7 +421,7 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
     if (result.stages.length === 0) {
       throw new Error("AI returned an empty stages array.");
     }
-    
+
     // Filter out any null/undefined/empty objects that might have slipped through
     result.stages = result.stages.filter((s: any) => s && typeof s === "object" && Object.keys(s).length > 0);
 
@@ -694,4 +454,3 @@ Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that st
     });
   }
 }
-
