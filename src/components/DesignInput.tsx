@@ -5,7 +5,7 @@ import { InputMode } from "@/src/types";
 import { motion } from "motion/react";
 import { Check, Keyboard, Image as ImageIcon } from "lucide-react";
 import { Point, NormalizedPoint } from "@/src/lib/shapeMath";
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { DrawingCanvas } from "./DrawingCanvas";
 import { imageToOutline } from "@/src/services/visionService";
 
@@ -80,21 +80,32 @@ export default function DesignInput({
   const [imageError, setImageError] = useState<string | null>(null);
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [imageThumbnail, setImageThumbnail] = useState<string | null>(null);
-  const [imageOutlineCaptured, setImageOutlineCaptured] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const thumbnailUrlRef = useRef<string | null>(null);
+
+  // Revoke object URL on unmount to prevent memory leaks
+  useEffect(() => () => {
+    if (thumbnailUrlRef.current) URL.revokeObjectURL(thumbnailUrlRef.current);
+  }, []);
 
   const handleImageFile = async (file: File) => {
     setImageError(null);
-    setImageOutlineCaptured(false);
     setImageProgress("");
     setIsImageLoading(true);
-    setImageThumbnail(URL.createObjectURL(file));
+    // Revoke previous thumbnail URL before creating a new one
+    if (thumbnailUrlRef.current) {
+      URL.revokeObjectURL(thumbnailUrlRef.current);
+    }
+    const newUrl = URL.createObjectURL(file);
+    thumbnailUrlRef.current = newUrl;
+    setImageThumbnail(newUrl);
     try {
       const outline = await imageToOutline(file, (msg) => setImageProgress(msg));
       handleShapeComplete(outline);
-      setImageOutlineCaptured(true);
     } catch (err: any) {
       setImageError(err.message || "Failed to trace image. Please try again.");
+      URL.revokeObjectURL(thumbnailUrlRef.current);
+      thumbnailUrlRef.current = null;
       setImageThumbnail(null);
     } finally {
       setIsImageLoading(false);
@@ -208,6 +219,7 @@ export default function DesignInput({
             <div className="space-y-3">
               <button
                 type="button"
+                aria-label={imageThumbnail ? "Replace uploaded image" : "Upload image"}
                 onClick={() => imageInputRef.current?.click()}
                 disabled={isImageLoading}
                 className={cn(
@@ -244,7 +256,7 @@ export default function DesignInput({
                   <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">{imageProgress}</span>
                 </div>
               )}
-              {imageOutlineCaptured && !isImageLoading && (
+              {drawnPath.length > 0 && !isImageLoading && (
                 <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto">
                   <Check className="w-3 h-3 text-success" />
                   <span className="text-[10px] font-bold text-success uppercase tracking-wider">Outline Captured</span>
@@ -255,7 +267,14 @@ export default function DesignInput({
                   {imageError}
                   <button
                     type="button"
-                    onClick={() => { setImageError(null); setImageThumbnail(null); setImageOutlineCaptured(false); }}
+                    onClick={() => {
+                      setImageError(null);
+                      if (thumbnailUrlRef.current) {
+                        URL.revokeObjectURL(thumbnailUrlRef.current);
+                        thumbnailUrlRef.current = null;
+                      }
+                      setImageThumbnail(null);
+                    }}
                     className="block mx-auto mt-1 text-[10px] underline text-danger/70 hover:text-danger"
                   >
                     Try again
