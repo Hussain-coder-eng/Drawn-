@@ -1,6 +1,9 @@
 import { jsonrepair } from 'jsonrepair';
 import type { NormalizedPoint } from './shapeMath';
 
+const MAX_IMAGE_DIM = 768;
+const JPEG_QUALITY = 0.72;
+
 /**
  * Compute scaled dimensions preserving aspect ratio.
  * If max(width, height) <= maxDim, returns original dimensions.
@@ -17,8 +20,8 @@ export function computeScaledDims(
   }
   const scale = maxDim / max;
   return {
-    width: Math.round(width * scale),
-    height: Math.round(height * scale),
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
   };
 }
 
@@ -28,8 +31,8 @@ export function computeScaledDims(
  */
 export async function downscaleImageToBase64(
   file: File,
-  maxDim: number = 768,
-  quality: number = 0.72
+  maxDim: number = MAX_IMAGE_DIM,
+  quality: number = JPEG_QUALITY
 ): Promise<{ base64: string; mimeType: string }> {
   const mimeType = 'image/jpeg';
 
@@ -43,15 +46,23 @@ export async function downscaleImageToBase64(
 
   // Draw onto offscreen canvas at scaled dimensions
   const canvas = new OffscreenCanvas(scaledWidth, scaledHeight);
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('OffscreenCanvas 2d context unavailable');
+  }
   ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
 
-  // Export to JPEG and convert to base64
+  // Export to JPEG and convert to base64 via FileReader (avoids RangeError on large images)
   const blob = await canvas.convertToBlob({ type: mimeType, quality });
-  const arrayBuffer = await blob.arrayBuffer();
-  const uint8Array = new Uint8Array(arrayBuffer);
-  const binary = String.fromCharCode(...uint8Array);
-  const base64 = btoa(binary);
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      resolve(dataUrl.slice(dataUrl.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
 
   return { base64, mimeType };
 }
@@ -176,7 +187,8 @@ export function parseVisionStrokes(rawText: string): NormalizedPoint[] {
 
     const clampedStroke: number[][] = [];
     for (const point of stroke) {
-      if (Array.isArray(point) && point.length >= 2) {
+      if (Array.isArray(point) && point.length >= 2 &&
+          Number.isFinite(point[0]) && Number.isFinite(point[1])) {
         const x = Math.max(0, Math.min(1, point[0]));
         const y = Math.max(0, Math.min(1, point[1]));
         clampedStroke.push([x, y]);

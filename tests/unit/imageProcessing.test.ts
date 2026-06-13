@@ -43,6 +43,12 @@ describe('imageProcessing', () => {
       expect(result.width).toBe(1);
       expect(result.height).toBeLessThanOrEqual(2);
     });
+
+    it('clamps to minimum 1 for extreme aspect ratios', () => {
+      const result = computeScaledDims(10, 20000, 768);
+      expect(result.width).toBeGreaterThanOrEqual(1);
+      expect(result.height).toBe(768);
+    });
   });
 
   describe('orderAndFlattenStrokes', () => {
@@ -163,6 +169,39 @@ describe('imageProcessing', () => {
       const result = parseVisionStrokes(input);
       expect(result.length).toBe(2);
       expect(result[0]).toEqual({ x: 0.2, y: 0.3 });
+    });
+
+    it('throws when "strokes" key is missing', () => {
+      const input = '{"data": []}';
+      expect(() => parseVisionStrokes(input)).toThrow(/missing "strokes" array/i);
+    });
+
+    it('throws when "strokes" is not an array', () => {
+      const input = '{"strokes": "bad"}';
+      expect(() => parseVisionStrokes(input)).toThrow(/missing "strokes" array/i);
+    });
+
+    it('drops points with non-finite coordinates and keeps finite points', () => {
+      // 3-point stroke: first point has NaN x — should be dropped, leaving 2 finite points
+      const stroke1 = [['abc', 0.2], [0.3, 0.4], [0.5, 0.6]];
+      const input = JSON.stringify({ strokes: [stroke1] });
+      const result = parseVisionStrokes(input);
+      // Only the two finite points survive
+      expect(result.length).toBe(2);
+      expect(result[0]).toEqual({ x: 0.3, y: 0.4 });
+      expect(result[1]).toEqual({ x: 0.5, y: 0.6 });
+    });
+
+    it('drops stroke entirely when non-finite coords reduce it below 2 points', () => {
+      // 2-point stroke where one coord is NaN — drops to <2 points, stroke removed
+      const badStroke = [[NaN, 0.2], [0.3, 0.4]];
+      const goodStroke = [[0.1, 0.1], [0.9, 0.9]];
+      const input = JSON.stringify({ strokes: [badStroke, goodStroke] });
+      const result = parseVisionStrokes(input);
+      // Only points from the good stroke survive
+      expect(result.length).toBe(2);
+      expect(result[0]).toEqual({ x: 0.1, y: 0.1 });
+      expect(result[1]).toEqual({ x: 0.9, y: 0.9 });
     });
   });
 
