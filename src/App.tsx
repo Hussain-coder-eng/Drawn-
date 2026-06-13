@@ -634,7 +634,13 @@ export default function App() {
         setNormalizedDrawnPath={(path) => updateState({ normalizedDrawnPath: path, hasResult: false })}
         expanded={sheetExpanded}
         onModeSelect={(mode) => {
-          updateState({ mode, hasResult: false, returnToStart: false });
+          const modeChanged = mode !== state.mode;
+          updateState({
+            mode,
+            hasResult: false,
+            returnToStart: false,
+            ...(modeChanged ? { drawnPath: [], normalizedDrawnPath: [] } : {}),
+          });
           setSheetExpanded(true);
         }}
         returnToStart={state.returnToStart}
