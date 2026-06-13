@@ -115,8 +115,15 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
     const uid = raw.uid;
     const prompt = raw.prompt;
     const cacheKey = raw.cacheKey;
-    if (!uid || !prompt || !cacheKey)
+    if (!uid || !cacheKey)
         return;
+    if (raw.type === "vision") {
+        if (!raw.imageBase64 || !raw.mimeType)
+            return;
+    }
+    else if (!prompt) {
+        return;
+    }
     // 1. Per-user rate limit
     const userRef = db.collection("users").doc(uid);
     try {
