@@ -38,7 +38,15 @@ Return ONLY JSON:
   ]
 }`;
 
-async function callGeminiWithRetry(prompt: string): Promise<string> {
+const VISION_SYSTEM_PROMPT = `Trace the MAIN subject of the image as 1–4 ORDERED strokes. Start with the outer silhouette, then add key internal features (e.g. eyes, mouth) as separate strokes. Each stroke must have 12–40 points. Coordinates are normalized to [0,1] with y pointing DOWN (0=top, 1=bottom). Return ONLY JSON with no prose and no markdown fences:
+{ "strokes": [[[x,y],[x,y],...], ...] }`;
+
+interface ImagePart {
+  data: string;
+  mimeType: string;
+}
+
+async function callGeminiWithRetry(prompt: string, imagePart?: ImagePart): Promise<string> {
   // Uses Application Default Credentials via Vertex AI — no API key needed
   const ai = new GoogleGenAI({
     vertexai: true,
@@ -51,16 +59,22 @@ async function callGeminiWithRetry(prompt: string): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
     try {
+      const contents = imagePart
+        ? [{ role: "user", parts: [{ inlineData: { data: imagePart.data, mimeType: imagePart.mimeType } }, { text: prompt }] }]
+        : prompt;
+      const config = imagePart
+        ? { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: "application/json", abortSignal: controller.signal }
+        : {
+            systemInstruction: SYSTEM_PROMPT,
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192,
+            thinkingConfig: { thinkingBudget: 0 },
+            abortSignal: controller.signal,
+          };
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          responseMimeType: "application/json",
-          maxOutputTokens: 8192,
-          thinkingConfig: { thinkingBudget: 0 },
-          abortSignal: controller.signal,
-        },
+        contents,
+        config,
       });
       clearTimeout(timer);
 
@@ -199,7 +213,9 @@ export const processGeminiJob = onDocumentCreated(
       }
 
       // 4. Call Gemini via Vertex AI (ADC — no API key required)
-      const text = await callGeminiWithRetry(prompt);
+      const text = raw.type === "vision"
+        ? await callGeminiWithRetry(VISION_SYSTEM_PROMPT, { data: raw.imageBase64 as string, mimeType: raw.mimeType as string })
+        : await callGeminiWithRetry(prompt);
 
       // 5. Write to cache
       await cacheRef.set({

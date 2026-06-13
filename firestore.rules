@@ -148,7 +148,16 @@ service cloud.firestore {
         && request.resource.data.prompt.size() < 50000
         && request.resource.data.cacheKey is string
         && request.resource.data.cacheKey.size() > 0
-        && request.resource.data.cacheKey.size() <= 500;
+        && request.resource.data.cacheKey.size() <= 500
+        && (
+          !("type" in request.resource.data)
+          || (
+            request.resource.data.type == "vision"
+            && request.resource.data.imageBase64 is string
+            && request.resource.data.imageBase64.size() <= 1000000
+            && request.resource.data.mimeType is string
+          )
+        );
       allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
       allow update, delete: if false;
     }
