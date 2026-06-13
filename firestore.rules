@@ -166,13 +166,15 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Backend-only — admin SDK bypasses rules; clients must never read shared cache entries.
     match /geminiCache/{key} {
-      allow read: if isAuthenticated();
+      allow read: if false;
       allow write: if false;
     }
 
+    // Backend-only — admin SDK bypasses rules; clients must never read concurrency state.
     match /config/{doc} {
-      allow read: if isAuthenticated();
+      allow read: if false;
       allow write: if false;
     }
   }

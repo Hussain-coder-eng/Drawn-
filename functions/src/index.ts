@@ -15,6 +15,9 @@ const MAX_ACTIVE_CALLS = 10;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const GEMINI_TIMEOUT_MS = 45_000;
 const MAX_GEMINI_RETRIES = 3;
+// Lease duration for concurrency slots — must exceed the function timeout so crashed
+// functions cannot permanently block slots; 130 s > 120 s (timeoutSeconds above).
+const LEASE_MS = 130_000;
 
 const SYSTEM_PROMPT = `You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
 
@@ -134,11 +137,11 @@ export const processGeminiJob = onDocumentCreated(
       return;
     }
 
-    // 1. Per-user rate limit
-    const userRef = db.collection("users").doc(uid);
+    // 1. Per-user rate limit (Fix B: dedicated /rateLimits/{uid} doc, not user profile)
+    const rateLimitRef = db.collection("rateLimits").doc(uid);
     try {
       await db.runTransaction(async (tx) => {
-        const snap = await tx.get(userRef);
+        const snap = await tx.get(rateLimitRef);
         const now = Date.now();
         const d = snap.data() ?? {};
         const windowStart: number = d.routeGenWindowStart ?? 0;
@@ -156,7 +159,7 @@ export const processGeminiJob = onDocumentCreated(
           count === 0
             ? { routeGenCount: 1, routeGenWindowStart: now }
             : { routeGenCount: FieldValue.increment(1), routeGenWindowStart: windowStart };
-        tx.set(userRef, update, { merge: true });
+        tx.set(rateLimitRef, update, { merge: true });
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -171,15 +174,42 @@ export const processGeminiJob = onDocumentCreated(
       throw err;
     }
 
-    // 2. Global concurrency cap
+    // 2. Shared Firestore cache — checked BEFORE acquiring a concurrency slot (Fix C)
+    // so cache hits never consume or waste a slot.
+    const safeCacheKey = createHash("sha256").update(cacheKey).digest("hex");
+    const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
+    const cacheSnap = await cacheRef.get();
+    if (cacheSnap.exists) {
+      const cacheData = cacheSnap.data()!;
+      const expiresAt = cacheData.expiresAt as Timestamp;
+      if (expiresAt.toMillis() > Date.now()) {
+        await cacheRef.update({ hitCount: FieldValue.increment(1) });
+        await jobRef.update({
+          status: "done",
+          result: cacheData.text,
+          fromCache: true,
+          updatedAt: Timestamp.now(),
+        });
+        return;
+      }
+    }
+
+    // 3. Global concurrency cap via leased slots (Fix D)
+    // Slots carry an expiresAt so crashed/timed-out functions can't leak the counter
+    // permanently — stale entries are pruned on every acquire and release.
     const configRef = db.collection("config").doc("gemini");
     let slotAcquired = false;
     try {
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(configRef);
-        const active: number = snap.data()?.activeCalls ?? 0;
-        if (active >= MAX_ACTIVE_CALLS) throw new Error("BUSY");
-        tx.set(configRef, { activeCalls: FieldValue.increment(1) }, { merge: true });
+        const now = Date.now();
+        const rawSlots: Array<{ ownerJobId: string; expiresAt: number }> =
+          snap.data()?.slots ?? [];
+        // Prune expired leases before counting.
+        const activeSlots = rawSlots.filter((s) => s.expiresAt > now);
+        if (activeSlots.length >= MAX_ACTIVE_CALLS) throw new Error("BUSY");
+        activeSlots.push({ ownerJobId: jobId, expiresAt: now + LEASE_MS });
+        tx.set(configRef, { slots: activeSlots }, { merge: true });
       });
       slotAcquired = true;
     } catch (err: unknown) {
@@ -197,25 +227,6 @@ export const processGeminiJob = onDocumentCreated(
 
     try {
       await jobRef.update({ status: "processing", updatedAt: Timestamp.now() });
-
-      // 3. Shared Firestore cache
-      const safeCacheKey = createHash("sha256").update(cacheKey).digest("hex");
-      const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
-      const cacheSnap = await cacheRef.get();
-      if (cacheSnap.exists) {
-        const cacheData = cacheSnap.data()!;
-        const expiresAt = cacheData.expiresAt as Timestamp;
-        if (expiresAt.toMillis() > Date.now()) {
-          await cacheRef.update({ hitCount: FieldValue.increment(1) });
-          await jobRef.update({
-            status: "done",
-            result: cacheData.text,
-            fromCache: true,
-            updatedAt: Timestamp.now(),
-          });
-          return;
-        }
-      }
 
       // 4. Call Gemini via Vertex AI (ADC — no API key required)
       // Vision uses VISION_SYSTEM_PROMPT, not raw.prompt (the client's prompt exists only to satisfy firestore.rules).
@@ -247,7 +258,18 @@ export const processGeminiJob = onDocumentCreated(
       });
     } finally {
       if (slotAcquired) {
-        await configRef.update({ activeCalls: FieldValue.increment(-1) }).catch(() => {});
+        // Release leased slot — also prunes any other expired entries; idempotent if
+        // this slot was already swept out by a concurrent acquire.
+        await db.runTransaction(async (tx) => {
+          const snap = await tx.get(configRef);
+          const now = Date.now();
+          const rawSlots: Array<{ ownerJobId: string; expiresAt: number }> =
+            snap.data()?.slots ?? [];
+          const remaining = rawSlots.filter(
+            (s) => s.ownerJobId !== jobId && s.expiresAt > now
+          );
+          tx.set(configRef, { slots: remaining }, { merge: true });
+        }).catch(() => {});
       }
     }
   }

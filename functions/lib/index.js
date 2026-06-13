@@ -15,6 +15,9 @@ const MAX_ACTIVE_CALLS = 10;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const GEMINI_TIMEOUT_MS = 45000;
 const MAX_GEMINI_RETRIES = 3;
+// Lease duration for concurrency slots — must exceed the function timeout so crashed
+// functions cannot permanently block slots; 130 s > 120 s (timeoutSeconds above).
+const LEASE_MS = 130000;
 const SYSTEM_PROMPT = `You are a precision GPS route planner. Select "Anchor Points" (waypoints) from the road network to draw the requested shape.
 
 RULES:
@@ -124,12 +127,12 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
     else if (!prompt) {
         return;
     }
-    // 1. Per-user rate limit
-    const userRef = db.collection("users").doc(uid);
+    // 1. Per-user rate limit (Fix B: dedicated /rateLimits/{uid} doc, not user profile)
+    const rateLimitRef = db.collection("rateLimits").doc(uid);
     try {
         await db.runTransaction(async (tx) => {
             var _a, _b, _c;
-            const snap = await tx.get(userRef);
+            const snap = await tx.get(rateLimitRef);
             const now = Date.now();
             const d = (_a = snap.data()) !== null && _a !== void 0 ? _a : {};
             const windowStart = (_b = d.routeGenWindowStart) !== null && _b !== void 0 ? _b : 0;
@@ -143,7 +146,7 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
             const update = count === 0
                 ? { routeGenCount: 1, routeGenWindowStart: now }
                 : { routeGenCount: firestore_2.FieldValue.increment(1), routeGenWindowStart: windowStart };
-            tx.set(userRef, update, { merge: true });
+            tx.set(rateLimitRef, update, { merge: true });
         });
     }
     catch (err) {
@@ -158,17 +161,42 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
         }
         throw err;
     }
-    // 2. Global concurrency cap
+    // 2. Shared Firestore cache — checked BEFORE acquiring a concurrency slot (Fix C)
+    // so cache hits never consume or waste a slot.
+    const safeCacheKey = (0, crypto_1.createHash)("sha256").update(cacheKey).digest("hex");
+    const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
+    const cacheSnap = await cacheRef.get();
+    if (cacheSnap.exists) {
+        const cacheData = cacheSnap.data();
+        const expiresAt = cacheData.expiresAt;
+        if (expiresAt.toMillis() > Date.now()) {
+            await cacheRef.update({ hitCount: firestore_2.FieldValue.increment(1) });
+            await jobRef.update({
+                status: "done",
+                result: cacheData.text,
+                fromCache: true,
+                updatedAt: firestore_2.Timestamp.now(),
+            });
+            return;
+        }
+    }
+    // 3. Global concurrency cap via leased slots (Fix D)
+    // Slots carry an expiresAt so crashed/timed-out functions can't leak the counter
+    // permanently — stale entries are pruned on every acquire and release.
     const configRef = db.collection("config").doc("gemini");
     let slotAcquired = false;
     try {
         await db.runTransaction(async (tx) => {
             var _a, _b;
             const snap = await tx.get(configRef);
-            const active = (_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.activeCalls) !== null && _b !== void 0 ? _b : 0;
-            if (active >= MAX_ACTIVE_CALLS)
+            const now = Date.now();
+            const rawSlots = (_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.slots) !== null && _b !== void 0 ? _b : [];
+            // Prune expired leases before counting.
+            const activeSlots = rawSlots.filter((s) => s.expiresAt > now);
+            if (activeSlots.length >= MAX_ACTIVE_CALLS)
                 throw new Error("BUSY");
-            tx.set(configRef, { activeCalls: firestore_2.FieldValue.increment(1) }, { merge: true });
+            activeSlots.push({ ownerJobId: jobId, expiresAt: now + LEASE_MS });
+            tx.set(configRef, { slots: activeSlots }, { merge: true });
         });
         slotAcquired = true;
     }
@@ -186,24 +214,6 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
     }
     try {
         await jobRef.update({ status: "processing", updatedAt: firestore_2.Timestamp.now() });
-        // 3. Shared Firestore cache
-        const safeCacheKey = (0, crypto_1.createHash)("sha256").update(cacheKey).digest("hex");
-        const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
-        const cacheSnap = await cacheRef.get();
-        if (cacheSnap.exists) {
-            const cacheData = cacheSnap.data();
-            const expiresAt = cacheData.expiresAt;
-            if (expiresAt.toMillis() > Date.now()) {
-                await cacheRef.update({ hitCount: firestore_2.FieldValue.increment(1) });
-                await jobRef.update({
-                    status: "done",
-                    result: cacheData.text,
-                    fromCache: true,
-                    updatedAt: firestore_2.Timestamp.now(),
-                });
-                return;
-            }
-        }
         // 4. Call Gemini via Vertex AI (ADC — no API key required)
         // Vision uses VISION_SYSTEM_PROMPT, not raw.prompt (the client's prompt exists only to satisfy firestore.rules).
         const text = raw.type === "vision"
@@ -234,7 +244,16 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
     }
     finally {
         if (slotAcquired) {
-            await configRef.update({ activeCalls: firestore_2.FieldValue.increment(-1) }).catch(() => { });
+            // Release leased slot — also prunes any other expired entries; idempotent if
+            // this slot was already swept out by a concurrent acquire.
+            await db.runTransaction(async (tx) => {
+                var _a, _b;
+                const snap = await tx.get(configRef);
+                const now = Date.now();
+                const rawSlots = (_b = (_a = snap.data()) === null || _a === void 0 ? void 0 : _a.slots) !== null && _b !== void 0 ? _b : [];
+                const remaining = rawSlots.filter((s) => s.ownerJobId !== jobId && s.expiresAt > now);
+                tx.set(configRef, { slots: remaining }, { merge: true });
+            }).catch(() => { });
         }
     }
 });
