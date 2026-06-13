@@ -20,5 +20,10 @@
       "database": "ai-studio-8d05534a-096d-44c8-89cf-8276f572cb75",
       "rules": "firestore.rules"
     }
-  ]
+  ],
+  "hosting": {
+    "public": "dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+  }
 }
