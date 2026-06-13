@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { GeminiService } from "../../src/services/geminiService";
+import { GeminiService, hashString } from "../../src/services/geminiService";
 
 const mockUnsubscribe = vi.fn();
 const mockOnSnapshot = vi.fn();
@@ -37,10 +37,10 @@ describe("GeminiService in-memory cache", () => {
   });
 
   it("does not call submitGeminiJob on cache hit", async () => {
-    // Pre-populate in-memory cache
-    // Format: firestoreCacheKey + '|' + nodePoolHash (empty string for empty pools)
-    const firestoreCacheKey = JSON.stringify({ shapeName: "circle", distanceKm: 5, startNodeId: 1, script: [] });
-    const cacheKey = firestoreCacheKey + '|';
+    // Pre-populate in-memory cache using the v2 key format.
+    // Empty pools → nodePoolHash is "", empty script → script array is [].
+    // Key mirrors exactly what selectNodesStaged computes for these inputs.
+    const cacheKey = `v2:circle:5:1:${hashString(JSON.stringify({ script: [], nodePoolHash: "" }))}`;
     const cachedResult = { startNodeId: 1, stages: [] };
     (service as any).cache.set(cacheKey, cachedResult);
 

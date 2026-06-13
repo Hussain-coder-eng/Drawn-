@@ -186,28 +186,37 @@ export default function MapComponent({
       <div className="absolute top-6 right-6 z-[1000] flex flex-col gap-2">
         <div className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] overflow-hidden shadow-2xl">
           <button
+            type="button"
             onClick={() => setZoom(z => z + 1)}
+            aria-label="Zoom in"
             className="p-3 hover:bg-white/5 text-white transition-colors border-b border-divider"
           >
-            <ZoomIn className="w-5 h-5" />
+            <ZoomIn className="w-5 h-5" aria-hidden="true" />
           </button>
           <button
+            type="button"
             onClick={() => setZoom(z => z - 1)}
+            aria-label="Zoom out"
             className="p-3 hover:bg-white/5 text-white transition-colors"
           >
-            <ZoomOut className="w-5 h-5" />
+            <ZoomOut className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
         <button
+          type="button"
           onClick={() => setRecenterTrigger(t => t + 1)}
+          aria-label="Recenter map"
           className="bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] p-3 shadow-2xl hover:bg-white/5 text-white transition-colors"
         >
-          <Navigation className="w-5 h-5" />
+          <Navigation className="w-5 h-5" aria-hidden="true" />
         </button>
         {onToggleDebug && (
           <button
+            type="button"
             onClick={onToggleDebug}
             title="Toggle debug overlay"
+            aria-pressed={showDebug}
+            aria-label={showDebug ? "Hide debug overlay" : "Show debug overlay"}
             className={cn(
               "bg-bg-card/80 backdrop-blur-md border border-divider rounded-[12px] px-3 py-2 shadow-2xl text-[11px] font-mono font-semibold uppercase tracking-wider transition-colors",
               showDebug

@@ -80,6 +80,7 @@ export default function DesignInput({
   const [imageError, setImageError] = useState<string | null>(null);
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [imageThumbnail, setImageThumbnail] = useState<string | null>(null);
+  const [hasImageOutline, setHasImageOutline] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const thumbnailUrlRef = useRef<string | null>(null);
 
@@ -92,6 +93,10 @@ export default function DesignInput({
     setImageError(null);
     setImageProgress("");
     setIsImageLoading(true);
+    // Reset outline state so a new upload never inherits the previous outline
+    setHasImageOutline(false);
+    setNormalizedDrawnPath([]);
+    setDrawnPath([]);
     // Revoke previous thumbnail URL before creating a new one
     if (thumbnailUrlRef.current) {
       URL.revokeObjectURL(thumbnailUrlRef.current);
@@ -102,8 +107,11 @@ export default function DesignInput({
     try {
       const outline = await imageToOutline(file, (msg) => setImageProgress(msg));
       handleShapeComplete(outline);
+      setHasImageOutline(true);
     } catch (err: any) {
       setImageError(err.message || "Failed to trace image. Please try again.");
+      setNormalizedDrawnPath([]);
+      setDrawnPath([]);
       URL.revokeObjectURL(thumbnailUrlRef.current);
       thumbnailUrlRef.current = null;
       setImageThumbnail(null);
@@ -256,7 +264,7 @@ export default function DesignInput({
                   <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">{imageProgress}</span>
                 </div>
               )}
-              {drawnPath.length > 0 && !isImageLoading && (
+              {hasImageOutline && !isImageLoading && (
                 <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto">
                   <Check className="w-3 h-3 text-success" />
                   <span className="text-[10px] font-bold text-success uppercase tracking-wider">Outline Captured</span>
@@ -269,6 +277,7 @@ export default function DesignInput({
                     type="button"
                     onClick={() => {
                       setImageError(null);
+                      setHasImageOutline(false);
                       if (thumbnailUrlRef.current) {
                         URL.revokeObjectURL(thumbnailUrlRef.current);
                         thumbnailUrlRef.current = null;

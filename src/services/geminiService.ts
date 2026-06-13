@@ -8,6 +8,19 @@ import { RouteFitness, StageScore } from "./fitnessService";
 import { auth, db } from "../firebase";
 import { pollJobResult } from "./jobPoller";
 
+// Non-crypto hash for cache keys: combines two rolling hashes for ~64-bit width.
+// Synchronous and deterministic — same input always yields the same 16-char hex string.
+export function hashString(input: string): string {
+  let h1 = 5381 >>> 0;
+  let h2 = 52711 >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    h1 = (Math.imul(h1, 33) ^ c) >>> 0;
+    h2 = (Math.imul(h2, 31) ^ c) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
 export interface GeminiStagedResult {
   startNodeId: number;
   stages: { stageNumber: number; nodeIds: number[] }[];
@@ -128,13 +141,13 @@ export class GeminiService {
     }
 
     // 0. Check Cache
-    // firestoreCacheKey: stable identifier used in the Firestore job doc (must stay ≤500 chars
-    //   per security rules). Shared with the Cloud Function for server-side caching.
-    // inMemoryCacheKey: includes a node-pool fingerprint so stale results are invalidated
-    //   when the road network changes; only used in this process's Map.
-    const firestoreCacheKey = JSON.stringify({ shapeName, distanceKm, startNodeId, script: script.map(s => s.stage) });
+    // Both the Firestore job doc key and the in-memory key fold in the node-pool fingerprint
+    // via a deterministic hash, so different road networks with the same shape/distance/start
+    // never collide. The v2: prefix avoids replaying v1 entries cached without the fingerprint.
+    // Key stays ≤500 chars because the readable prefix is short and the hash is fixed 16 chars.
     const nodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
-    const inMemoryCacheKey = firestoreCacheKey + '|' + nodePoolHash;
+    const firestoreCacheKey = `v2:${shapeName}:${distanceKm}:${startNodeId}:${hashString(JSON.stringify({ script: script.map(s => s.stage), nodePoolHash }))}`;
+    const inMemoryCacheKey = firestoreCacheKey; // node pool already folded in
     if (this.cache.has(inMemoryCacheKey)) {
       console.log("[DEBUG] Returning cached Gemini result");
       return this.cache.get(inMemoryCacheKey)!;
@@ -335,15 +348,14 @@ Return a JSON object with a "stages" array containing ONLY the replanned stages.
 Each stage MUST have "stageNumber" and "nodeIds". Use ONLY node IDs from that stage's available nodes list.
 `;
 
-    const rerouteCacheKey = JSON.stringify({
-      op: "reroute",
-      shapeName,
-      distanceKm,
-      startNodeId: previousResult.startNodeId,
+    const rerouteNodePoolHash = stageNodePools.map(pool => pool.slice(0, 10).map(n => n.id).sort().join(',')).join('|');
+    const rerouteCacheKey = `v2:reroute:${shapeName}:${distanceKm}:${previousResult.startNodeId}:${hashString(JSON.stringify({
       failingStages: (fitnessResult.failingStages || [])
         .map(s => ({ stageNumber: s.stageNumber, directionScore: s.directionScore, distanceScore: s.distanceScore }))
         .sort((a, b) => a.stageNumber - b.stageNumber),
-    });
+      nodePoolHash: rerouteNodePoolHash,
+    }))}`;
+
 
     onProgress?.("AI is refining the route...");
     const text = await this.submitGeminiJob(reroutePrompt, rerouteCacheKey, onProgress);

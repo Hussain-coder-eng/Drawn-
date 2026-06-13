@@ -257,14 +257,37 @@ export class RoutingService {
       );
       // Always keep first, last, and all locked anchors; fill remaining budget evenly
       const budget = MAX_WAYPOINTS - lockedSet.size - 2; // -2 for first/last
-      const step = budget > 0 ? (waypointArray.length - 2) / (budget + 1) : Infinity;
-      routingWaypoints = waypointArray.filter((_, i) => {
-        if (i === 0 || i === waypointArray.length - 1) return true;
-        if (lockedSet.has(i)) return true;
-        // Keep evenly-spaced intermediate points within budget
-        const slot = Math.round((i - 1) / step);
-        return slot > 0 && slot <= budget && Math.round(slot * step) + 1 === i;
-      });
+      if (budget > 0) {
+        const step = (waypointArray.length - 2) / (budget + 1);
+        routingWaypoints = waypointArray.filter((_, i) => {
+          if (i === 0 || i === waypointArray.length - 1) return true;
+          if (lockedSet.has(i)) return true;
+          // Keep evenly-spaced intermediate points within budget
+          const slot = Math.round((i - 1) / step);
+          return slot > 0 && slot <= budget && Math.round(slot * step) + 1 === i;
+        });
+      } else {
+        // budget <= 0: too many locked anchors to fit unlocked intermediates.
+        // Subsample the locked anchors themselves to enforce the MAX_WAYPOINTS cap —
+        // keeping all of them unconditionally would exceed ORS/OSRM limits.
+        const allowedLocked = MAX_WAYPOINTS - 2; // reserve slots for first + last
+        const lockedIndicesAll = Array.from(lockedSet).sort((a, b) => a - b);
+        let chosenLocked: number[];
+        if (lockedIndicesAll.length > allowedLocked) {
+          // Evenly subsample locked indices by position in the sorted array
+          chosenLocked = Array.from({ length: allowedLocked }, (_, k) =>
+            lockedIndicesAll[Math.round(k * (lockedIndicesAll.length - 1) / (allowedLocked - 1))]
+          ).filter((v, i, arr) => arr.indexOf(v) === i); // dedup, preserves order
+        } else {
+          chosenLocked = lockedIndicesAll;
+        }
+        const firstIndex = 0;
+        const lastIndex = waypointArray.length - 1;
+        const chosenSet = new Set(chosenLocked);
+        routingWaypoints = waypointArray.filter((_, i) =>
+          i === firstIndex || i === lastIndex || chosenSet.has(i)
+        );
+      }
       // Ensure we have at least 2
       if (routingWaypoints.length < 2) routingWaypoints = [waypointArray[0], waypointArray[waypointArray.length - 1]];
     }
@@ -408,6 +431,8 @@ export class RoutingService {
     // Pass the key as a query parameter instead of an Authorization header.
     // The Authorization header triggers a CORS preflight that ORS rejects in browser contexts,
     // resulting in "Failed to fetch". Query-param auth skips the preflight entirely.
+    // Profile is foot-walking (pedestrian) to match the app's pedestrian routing intent —
+    // consistent with the OSRM "foot" profile. Do not change to driving-car.
     const url = `${ORS_BASE_URL}/directions/foot-walking/geojson?api_key=${encodeURIComponent(this.orsApiKey)}`;
     let lastError: any = null;
     let attempt = 0;
