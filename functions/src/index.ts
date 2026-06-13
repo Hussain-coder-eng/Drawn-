@@ -1,15 +1,14 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { GoogleGenAI } from "@google/genai";
 import { createHash } from "crypto";
 
-const geminiApiKey = defineSecret("GEMINI_API_KEY");
-
 initializeApp();
 
 const DB_ID = process.env.FIRESTORE_DATABASE_ID || "ai-studio-8d05534a-096d-44c8-89cf-8276f572cb75";
+const GCP_PROJECT = "drawn-production";
+const GCP_LOCATION = "us-central1";
 
 const RATE_LIMIT_PER_HOUR = 20;
 const MAX_ACTIVE_CALLS = 10;
@@ -39,8 +38,13 @@ Return ONLY JSON:
   ]
 }`;
 
-async function callGeminiWithRetry(prompt: string, apiKey: string): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey });
+async function callGeminiWithRetry(prompt: string): Promise<string> {
+  // Uses Application Default Credentials via Vertex AI — no API key needed
+  const ai = new GoogleGenAI({
+    vertexai: true,
+    project: GCP_PROJECT,
+    location: GCP_LOCATION,
+  });
   let lastError: Error = new Error("Gemini API failed after exhausting all retries.");
 
   for (let attempt = 1; attempt <= MAX_GEMINI_RETRIES; attempt++) {
@@ -71,7 +75,7 @@ async function callGeminiWithRetry(prompt: string, apiKey: string): Promise<stri
 
       const msg = e.message ?? "";
       const isQuota = msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED");
-      if (isQuota) throw new Error("Gemini API Daily Quota Exceeded. Try again tomorrow.");
+      if (isQuota) throw new Error("Gemini quota exceeded. Please try again later.");
 
       const isRetryable =
         msg.includes("429") ||
@@ -95,7 +99,6 @@ export const processGeminiJob = onDocumentCreated(
   {
     document: "jobs/{jobId}",
     database: DB_ID,
-    secrets: [geminiApiKey],
     timeoutSeconds: 120,
     memory: "256MiB",
   },
@@ -177,9 +180,6 @@ export const processGeminiJob = onDocumentCreated(
       await jobRef.update({ status: "processing", updatedAt: Timestamp.now() });
 
       // 3. Shared Firestore cache
-      // Hash the cacheKey so the document ID is always a valid 64-char hex string.
-      // The naive replace(/[^a-zA-Z0-9_-]/g, "_") approach produced IDs starting/ending
-      // with "__" which Firestore reserves, causing INVALID_ARGUMENT errors.
       const safeCacheKey = createHash("sha256").update(cacheKey).digest("hex");
       const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
       const cacheSnap = await cacheRef.get();
@@ -198,8 +198,8 @@ export const processGeminiJob = onDocumentCreated(
         }
       }
 
-      // 4. Call Gemini
-      const text = await callGeminiWithRetry(prompt, geminiApiKey.value());
+      // 4. Call Gemini via Vertex AI (ADC — no API key required)
+      const text = await callGeminiWithRetry(prompt);
 
       // 5. Write to cache
       await cacheRef.set({

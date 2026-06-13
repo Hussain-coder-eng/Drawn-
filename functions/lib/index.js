@@ -2,13 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.processGeminiJob = void 0;
 const firestore_1 = require("firebase-functions/v2/firestore");
-const params_1 = require("firebase-functions/params");
 const app_1 = require("firebase-admin/app");
 const firestore_2 = require("firebase-admin/firestore");
 const genai_1 = require("@google/genai");
-const geminiApiKey = (0, params_1.defineSecret)("GEMINI_API_KEY");
+const crypto_1 = require("crypto");
 (0, app_1.initializeApp)();
 const DB_ID = process.env.FIRESTORE_DATABASE_ID || "ai-studio-8d05534a-096d-44c8-89cf-8276f572cb75";
+const GCP_PROJECT = "drawn-production";
+const GCP_LOCATION = "us-central1";
 const RATE_LIMIT_PER_HOUR = 20;
 const MAX_ACTIVE_CALLS = 10;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -35,9 +36,14 @@ Return ONLY JSON:
     { "stageNumber": 2, "nodeIds": ["3", "4", "5"] }
   ]
 }`;
-async function callGeminiWithRetry(prompt, apiKey) {
+async function callGeminiWithRetry(prompt) {
     var _a;
-    const ai = new genai_1.GoogleGenAI({ apiKey });
+    // Uses Application Default Credentials via Vertex AI — no API key needed
+    const ai = new genai_1.GoogleGenAI({
+        vertexai: true,
+        project: GCP_PROJECT,
+        location: GCP_LOCATION,
+    });
     let lastError = new Error("Gemini API failed after exhausting all retries.");
     for (let attempt = 1; attempt <= MAX_GEMINI_RETRIES; attempt++) {
         const controller = new AbortController();
@@ -69,7 +75,7 @@ async function callGeminiWithRetry(prompt, apiKey) {
             const msg = (_a = e.message) !== null && _a !== void 0 ? _a : "";
             const isQuota = msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED");
             if (isQuota)
-                throw new Error("Gemini API Daily Quota Exceeded. Try again tomorrow.");
+                throw new Error("Gemini quota exceeded. Please try again later.");
             const isRetryable = msg.includes("429") ||
                 msg.includes("503") ||
                 msg.includes("UNAVAILABLE") ||
@@ -88,7 +94,6 @@ async function callGeminiWithRetry(prompt, apiKey) {
 exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
     document: "jobs/{jobId}",
     database: DB_ID,
-    secrets: [geminiApiKey],
     timeoutSeconds: 120,
     memory: "256MiB",
 }, async (event) => {
@@ -114,7 +119,7 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
             const d = (_a = snap.data()) !== null && _a !== void 0 ? _a : {};
             const windowStart = (_b = d.routeGenWindowStart) !== null && _b !== void 0 ? _b : 0;
             let count = (_c = d.routeGenCount) !== null && _c !== void 0 ? _c : 0;
-            if (now - windowStart > 60 * 60 * 1000)
+            if (now - windowStart > 60 * 60 * 1000 || windowStart > now)
                 count = 0;
             if (count >= RATE_LIMIT_PER_HOUR) {
                 const waitMin = Math.ceil((60 * 60 * 1000 - (now - windowStart)) / 60000);
@@ -164,10 +169,10 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
         }
         throw err;
     }
-    await jobRef.update({ status: "processing", updatedAt: firestore_2.Timestamp.now() });
     try {
+        await jobRef.update({ status: "processing", updatedAt: firestore_2.Timestamp.now() });
         // 3. Shared Firestore cache
-        const safeCacheKey = cacheKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const safeCacheKey = (0, crypto_1.createHash)("sha256").update(cacheKey).digest("hex");
         const cacheRef = db.collection("geminiCache").doc(safeCacheKey);
         const cacheSnap = await cacheRef.get();
         if (cacheSnap.exists) {
@@ -184,8 +189,8 @@ exports.processGeminiJob = (0, firestore_1.onDocumentCreated)({
                 return;
             }
         }
-        // 4. Call Gemini
-        const text = await callGeminiWithRetry(prompt, geminiApiKey.value());
+        // 4. Call Gemini via Vertex AI (ADC — no API key required)
+        const text = await callGeminiWithRetry(prompt);
         // 5. Write to cache
         await cacheRef.set({
             cacheKey,
