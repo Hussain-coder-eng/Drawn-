@@ -151,11 +151,15 @@ service cloud.firestore {
         && request.resource.data.cacheKey.size() <= 500
         && (
           !("type" in request.resource.data)
+          // vision jobs: image up to ~1MB base64 (headroom below Firestore 1 MiB doc limit)
           || (
             request.resource.data.type == "vision"
             && request.resource.data.imageBase64 is string
+            && request.resource.data.imageBase64.size() > 0
             && request.resource.data.imageBase64.size() <= 1000000
             && request.resource.data.mimeType is string
+            && request.resource.data.mimeType.size() > 0
+            && request.resource.data.mimeType.matches('image/.*')
           )
         );
       allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
