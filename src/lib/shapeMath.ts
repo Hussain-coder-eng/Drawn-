@@ -1,6 +1,8 @@
 import * as turf from "@turf/turf";
 import type { InputMode } from "../types";
 
+const NEAR_CLOSED_PATH_BBOX_RATIO = 0.1;
+
 export interface Point {
   lat: number;
   lng: number;
@@ -28,7 +30,7 @@ export const SHAPE_SIMPLIFICATION_CONFIG: Record<string, { epsilon: number, targ
   draw:      { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
   drawing:   { epsilon: 0.03, targetSegments: 15, minSegments: 4  },
   // Image outline (behaves like freehand draw downstream)
-  image:     { epsilon: 0.03, targetSegments: 15, minSegments: 4  }
+  image:     { epsilon: 0.018, targetSegments: 28, minSegments: 10 }
 };
 
 export function rdpSimplify(points: NormalizedPoint[], epsilon: number): NormalizedPoint[] {
@@ -323,7 +325,7 @@ export function isClosedShape(
   if (mode === 'shapes') {
     return ['circle', 'heart', 'star', 'square', 'infinity'].includes(selectedShape ?? '');
   }
-  if (mode === 'draw' && normalizedDrawnPath.length >= 2) {
+  if ((mode === 'draw' || mode === 'image') && normalizedDrawnPath.length >= 2) {
     const first = normalizedDrawnPath[0];
     const last = normalizedDrawnPath[normalizedDrawnPath.length - 1];
     const gap = Math.sqrt((first.x - last.x) ** 2 + (first.y - last.y) ** 2);
@@ -333,7 +335,7 @@ export function isClosedShape(
       (Math.max(...xs) - Math.min(...xs)) ** 2 +
       (Math.max(...ys) - Math.min(...ys)) ** 2
     );
-    return bboxDiag > 0 && gap < bboxDiag * 0.1;
+    return bboxDiag > 0 && gap < bboxDiag * NEAR_CLOSED_PATH_BBOX_RATIO;
   }
   return false;
 }

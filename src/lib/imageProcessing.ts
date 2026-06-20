@@ -1,8 +1,14 @@
 import { jsonrepair } from 'jsonrepair';
 import type { NormalizedPoint } from './shapeMath';
 
-const MAX_IMAGE_DIM = 768;
-const JPEG_QUALITY = 0.72;
+const MAX_IMAGE_DIM = 896;
+const JPEG_QUALITY = 0.82;
+const MAX_INLINE_IMAGE_BYTES = 675_000;
+const PNG_MIME_TYPE = 'image/png';
+const JPEG_MIME_TYPE = 'image/jpeg';
+const WEBP_MIME_TYPE = 'image/webp';
+const TRANSPARENT_OR_LINE_ART_MIME_TYPES = new Set([PNG_MIME_TYPE, WEBP_MIME_TYPE]);
+const NEAR_DUPLICATE_POINT_DISTANCE = 0.002;
 
 /**
  * Compute scaled dimensions preserving aspect ratio.
@@ -25,16 +31,32 @@ export function computeScaledDims(
   };
 }
 
+function preferredOutputMimeType(fileType: string): string {
+  return TRANSPARENT_OR_LINE_ART_MIME_TYPES.has(fileType) ? fileType : JPEG_MIME_TYPE;
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      resolve(dataUrl.slice(dataUrl.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
 /**
- * Downscale an image file to JPEG and return base64-encoded data.
- * Strips the "data:image/jpeg;base64," prefix.
+ * Downscale an image file and return base64-encoded data without the data URL prefix.
+ * Preserves PNG/WebP uploads when they stay within a conservative inline payload budget.
  */
 export async function downscaleImageToBase64(
   file: File,
   maxDim: number = MAX_IMAGE_DIM,
   quality: number = JPEG_QUALITY
 ): Promise<{ base64: string; mimeType: string }> {
-  const mimeType = 'image/jpeg';
+  const preferredMimeType = preferredOutputMimeType(file.type);
 
   // Load image and get dimensions
   const bitmap = await createImageBitmap(file);
@@ -52,17 +74,15 @@ export async function downscaleImageToBase64(
   }
   ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
 
-  // Export to JPEG and convert to base64 via FileReader (avoids RangeError on large images)
-  const blob = await canvas.convertToBlob({ type: mimeType, quality });
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      resolve(dataUrl.slice(dataUrl.indexOf(',') + 1));
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
+  let mimeType = preferredMimeType;
+  let blob = await canvas.convertToBlob({ type: mimeType, quality });
+
+  if (mimeType !== JPEG_MIME_TYPE && blob.size > MAX_INLINE_IMAGE_BYTES) {
+    mimeType = JPEG_MIME_TYPE;
+    blob = await canvas.convertToBlob({ type: mimeType, quality });
+  }
+
+  const base64 = await blobToBase64(blob);
 
   return { base64, mimeType };
 }
@@ -156,19 +176,66 @@ export function orderAndFlattenStrokes(strokes: number[][][]): NormalizedPoint[]
   return result;
 }
 
+function extractJsonPayload(rawText: string): string {
+  const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const firstBrace = rawText.indexOf('{');
+  const lastBrace = rawText.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return rawText.slice(firstBrace, lastBrace + 1);
+  }
+
+  return rawText;
+}
+
+function toFiniteClampedPoint(point: unknown): number[] | null {
+  let rawX: unknown;
+  let rawY: unknown;
+
+  if (Array.isArray(point) && point.length >= 2) {
+    [rawX, rawY] = point;
+  } else if (point && typeof point === 'object') {
+    const candidate = point as { x?: unknown; y?: unknown };
+    rawX = candidate.x;
+    rawY = candidate.y;
+  }
+
+  if (typeof rawX !== 'number' || typeof rawY !== 'number') {
+    return null;
+  }
+  if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+    return null;
+  }
+
+  return [
+    Math.max(0, Math.min(1, rawX)),
+    Math.max(0, Math.min(1, rawY)),
+  ];
+}
+
+function isNearDuplicatePoint(a: number[], b: number[]): boolean {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]) <= NEAR_DUPLICATE_POINT_DISTANCE;
+}
+
 /**
  * Parse Gemini vision response JSON and return flattened, clamped strokes.
  * - Repairs malformed JSON using jsonrepair.
+ * - Accepts markdown fences or short prose around the JSON object.
+ * - Accepts [x,y] arrays and {x,y} objects.
  * - Clamps x,y to [0,1].
+ * - Drops near-duplicate consecutive points.
  * - Drops degenerate strokes (<2 points).
  * - Orders and flattens remaining strokes.
  * - Throws Error if no usable strokes remain.
  */
 export function parseVisionStrokes(rawText: string): NormalizedPoint[] {
   // Repair and parse JSON
-  let parsed: { strokes?: number[][][] };
+  let parsed: { strokes?: unknown };
   try {
-    const repaired = jsonrepair(rawText);
+    const repaired = jsonrepair(extractJsonPayload(rawText));
     parsed = JSON.parse(repaired);
   } catch (err) {
     throw new Error(`Failed to parse vision response: ${err instanceof Error ? err.message : String(err)}`);
@@ -187,11 +254,12 @@ export function parseVisionStrokes(rawText: string): NormalizedPoint[] {
 
     const clampedStroke: number[][] = [];
     for (const point of stroke) {
-      if (Array.isArray(point) && point.length >= 2 &&
-          Number.isFinite(point[0]) && Number.isFinite(point[1])) {
-        const x = Math.max(0, Math.min(1, point[0]));
-        const y = Math.max(0, Math.min(1, point[1]));
-        clampedStroke.push([x, y]);
+      const clampedPoint = toFiniteClampedPoint(point);
+      if (clampedPoint) {
+        const previousPoint = clampedStroke[clampedStroke.length - 1];
+        if (!previousPoint || !isNearDuplicatePoint(previousPoint, clampedPoint)) {
+          clampedStroke.push(clampedPoint);
+        }
       }
     }
 

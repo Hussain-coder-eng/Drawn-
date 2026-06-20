@@ -154,6 +154,43 @@ describe('imageProcessing', () => {
       expect(result[0]).toEqual({ x: 0.1, y: 0.2 });
     });
 
+    it('parses markdown-fenced JSON responses', () => {
+      const input = '```json\n{"strokes": [[[0.1, 0.2], [0.3, 0.4]]]}\n```';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.1, y: 0.2 },
+        { x: 0.3, y: 0.4 },
+      ]);
+    });
+
+    it('parses short prose around a JSON object', () => {
+      const input = 'Here is the trace:\n{"strokes": [[[0.2, 0.3], [0.4, 0.5]]]}\nHope this helps.';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.2, y: 0.3 },
+        { x: 0.4, y: 0.5 },
+      ]);
+    });
+
+    it('accepts object points with x and y coordinates', () => {
+      const input = '{"strokes": [[{"x": 0.15, "y": 0.25}, {"x": 0.35, "y": 0.45}]]}';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.15, y: 0.25 },
+        { x: 0.35, y: 0.45 },
+      ]);
+    });
+
+    it('drops near-duplicate consecutive points after clamping', () => {
+      const input = '{"strokes": [[[0.1, 0.1], [0.101, 0.101], [0.2, 0.2], [0.2, 0.2], [0.4, 0.4]]]}';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.1, y: 0.1 },
+        { x: 0.2, y: 0.2 },
+        { x: 0.4, y: 0.4 },
+      ]);
+    });
+
     it('throws error when no usable strokes remain', () => {
       const input = '{"strokes": []}';
       expect(() => parseVisionStrokes(input)).toThrow(/no usable strokes/i);
