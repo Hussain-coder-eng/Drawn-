@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "generatedBy": "scripts/generate-image-recognition-fixtures.mjs",
+  "fixtures": [
+    {
+      "id": "circle-loop",
+      "title": "Circle Loop",
+      "image": {
+        "path": "circle-loop.svg",
+        "width": 192,
+        "height": 192,
+        "mimeType": "image/svg+xml",
+        "transparent": false
+      },
+      "expected": {
+        "shapeKind": "loop",
+        "closed": true,
+        "strokeCount": 1,
+        "normalizedOutline": [
+          [
+            0.5,
+            0.14
+          ],
+          [
+            0.72,
+            0.2
+          ],
+          [
+            0.86,
+            0.5
+          ],
+          [
+            0.72,
+            0.8
+          ],
+          [
+            0.5,
+            0.86
+          ],
+          [
+            0.28,
+            0.8
+          ],
+          [
+            0.14,
+            0.5
+          ],
+          [
+            0.28,
+            0.2
+          ],
+          [
+            0.5,
+            0.14
+          ]
+        ],
+        "characteristics": [
+          "single closed stroke",
+          "near-circular outline",
+          "centered loop"
+        ]
+      },
+      "catches": "Checks that recognition preserves a plain closed loop without adding corners, gaps, or extra strokes."
+    },
+    {
+      "id": "star",
+      "title": "Five Point Star",
+      "image": {
+        "path": "star.svg",
+        "width": 192,
+        "height": 192,
+        "mimeType": "image/svg+xml",
+        "transparent": false
+      },
+      "expected": {
+        "shapeKind": "star",
+        "closed": true,
+        "strokeCount": 1,
+        "normalizedOutline": [
+          [
+            0.5,
+            0.09
+          ],
+          [
+            0.61,
+            0.36
+          ],
+          [
+            0.9,
+            0.36
+          ],
+          [
+            0.67,
+            0.54
+          ],
+          [
+            0.76,
+            0.84
+          ],
+          [
+            0.5,
+            0.66
+          ],
+          [
+            0.24,
+            0.84
+          ],
+          [
+            0.33,
+            0.54
+          ],
+          [
+            0.1,
+            0.36
+          ],
+          [
+            0.39,
+            0.36
+          ],
+          [
+            0.5,
+            0.09
+          ]
+        ],
+        "characteristics": [
+          "closed angular outline",
+          "five outer points",
+          "alternating concave vertices"
+        ]
+      },
+      "catches": "Checks that recognizers keep sharp corners and concave turns instead of smoothing an angular icon into a blob."
+    },
+    {
+      "id": "open-path",
+      "title": "Open Path",
+      "image": {
+        "path": "open-path.svg",
+        "width": 192,
+        "height": 192,
+        "mimeType": "image/svg+xml",
+        "transparent": false
+      },
+      "expected": {
+        "shapeKind": "open-path",
+        "closed": false,
+        "strokeCount": 1,
+        "normalizedOutline": [
+          [
+            0.1,
+            0.78
+          ],
+          [
+            0.25,
+            0.58
+          ],
+          [
+            0.39,
+            0.68
+          ],
+          [
+            0.54,
+            0.42
+          ],
+          [
+            0.69,
+            0.49
+          ],
+          [
+            0.88,
+            0.2
+          ]
+        ],
+        "characteristics": [
+          "single open stroke",
+          "distinct endpoints",
+          "zig-zag direction changes"
+        ]
+      },
+      "catches": "Checks that open drawings remain open and are not incorrectly closed into a loop by outline extraction."
+    },
+    {
+      "id": "face-multistroke",
+      "title": "Face Multi-Stroke Icon",
+      "image": {
+        "path": "face-multistroke.svg",
+        "width": 192,
+        "height": 192,
+        "mimeType": "image/svg+xml",
+        "transparent": false
+      },
+      "expected": {
+        "shapeKind": "face-icon",
+        "closed": true,
+        "strokeCount": 4,
+        "normalizedOutline": [
+          [
+            0.5,
+            0.16
+          ],
+          [
+            0.74,
+            0.25
+          ],
+          [
+            0.84,
+            0.5
+          ],
+          [
+            0.74,
+            0.75
+          ],
+          [
+            0.5,
+            0.84
+          ],
+          [
+            0.26,
+            0.75
+          ],
+          [
+            0.16,
+            0.5
+          ],
+          [
+            0.26,
+            0.25
+          ],
+          [
+            0.5,
+            0.16
+          ]
+        ],
+        "characteristics": [
+          "outer closed head loop",
+          "two separate eye strokes",
+          "separate curved mouth stroke"
+        ]
+      },
+      "catches": "Checks that multi-stroke icon recognition keeps internal features as separate strokes while preserving the outer silhouette."
+    },
+    {
+      "id": "transparent-icon",
+      "title": "High Contrast Transparent PNG",
+      "image": {
+        "path": "transparent-icon.png",
+        "width": 192,
+        "height": 192,
+        "mimeType": "image/png",
+        "transparent": true
+      },
+      "expected": {
+        "shapeKind": "transparent-icon",
+        "closed": true,
+        "strokeCount": 1,
+        "normalizedOutline": [
+          [
+            0.5,
+            0.1
+          ],
+          [
+            0.86,
+            0.5
+          ],
+          [
+            0.5,
+            0.9
+          ],
+          [
+            0.14,
+            0.5
+          ],
+          [
+            0.5,
+            0.1
+          ]
+        ],
+        "characteristics": [
+          "transparent background",
+          "high-contrast black silhouette",
+          "white punched center"
+        ]
+      },
+      "catches": "Checks alpha handling for icon-style PNG uploads so transparent backgrounds do not become part of the recognized shape."
+    }
+  ]
+}

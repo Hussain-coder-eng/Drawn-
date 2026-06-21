@@ -1,4 +1,23 @@
-# Image Upload Recognition Refinement
+# Image Recognition Fixture Pack
+
+## Checklist
+
+- [x] Inspect package scripts, existing tests, and current fixture conventions.
+- [x] Add a focused fixture-pack validation test and confirm it fails before assets exist.
+- [x] Add deterministic image fixtures, expected metadata, and a repeatable generator script.
+- [x] Document what each image fixture is meant to catch.
+- [x] Run the focused fixture test and record results.
+
+## Review / Results
+
+- Added deterministic image recognition fixtures for a circle loop, five-point star, open path, face-like multi-stroke icon, and transparent high-contrast PNG icon.
+- Added `manifest.json` metadata with normalized outline points, closed/open expectations, stroke counts, and shape characteristics.
+- Added README documentation explaining what each fixture is meant to catch and how to regenerate the pack.
+- Added a focused Vitest validation test for fixture existence, metadata bounds, required fixture IDs, open/closed expectations, and PNG alpha channel.
+- Red test confirmed before fixture generation: `npm run test -- tests/unit/imageRecognitionFixtures.test.ts` failed because `tests/fixtures/image-recognition/manifest.json` did not exist.
+- Final focused test passed: `npm run test -- tests/unit/imageRecognitionFixtures.test.ts` passed, 1 file / 2 tests.
+
+# Previous Image Upload Recognition Refinement
 
 ## Checklist
 
