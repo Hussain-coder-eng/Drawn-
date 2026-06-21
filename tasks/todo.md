@@ -13,8 +13,10 @@
 
 ## Review / Results
 
+- Fixed blocking review finding: `downscaleImageToBase64` now returns the actual encoded blob MIME type (`blob.type || requestedMimeType`) so browser encoder fallback bytes are not sent to Gemini with a mismatched MIME type.
+- Added focused unit coverage for WebP requests that encode as PNG, including verifying the returned base64 comes from the PNG blob.
 - Fixed review finding: `downscaleImageToBase64` now enforces the inline byte budget for every final output, including JPEG uploads and JPEG fallback from PNG/WebP, using bounded JPEG recompression/downscale attempts.
-- `npm run test -- --run`: passed, 12 files / 133 tests.
+- `npm run test -- --run`: passed, 12 files / 134 tests.
 - `npm run lint`: passed.
 - `npm --prefix functions run build -- --pretty false`: passed.
 - Note: `functions/npm ci` reported Node 24 vs package engine Node 22 and 20 audit vulnerabilities.

@@ -12,6 +12,7 @@ const MOCK_IMAGE_WIDTH = 2_000;
 const MOCK_IMAGE_HEIGHT = 1_000;
 
 type BlobRequest = { type?: string; quality?: number };
+type BlobResponse = number | { size: number; type: string };
 
 class MockFileReader {
   result: string | ArrayBuffer | null = null;
@@ -265,7 +266,7 @@ describe('imageProcessing', () => {
   });
 
   describe('downscaleImageToBase64', () => {
-    let convertResponses: number[];
+    let convertResponses: BlobResponse[];
     let convertRequests: BlobRequest[];
     let canvasSizes: Array<{ width: number; height: number }>;
 
@@ -295,11 +296,14 @@ describe('imageProcessing', () => {
 
         async convertToBlob(request: BlobRequest): Promise<Blob> {
           convertRequests.push(request);
-          const size = convertResponses.shift();
-          if (size === undefined) {
+          const response = convertResponses.shift();
+          if (response === undefined) {
             throw new Error('Unexpected convertToBlob call');
           }
-          return createSizedBlob(size, request.type ?? 'image/png');
+          if (typeof response === 'number') {
+            return createSizedBlob(response, request.type ?? 'image/png');
+          }
+          return createSizedBlob(response.size, response.type);
         }
       }
 
@@ -361,6 +365,20 @@ describe('imageProcessing', () => {
       ]);
       expect(canvasSizes[0]).toEqual({ width: 896, height: 448 });
       expect(canvasSizes.at(-1)).toEqual({ width: 896, height: 448 });
+    });
+
+    it('returns the actual blob MIME type when WebP encoding falls back to PNG', async () => {
+      convertResponses = [{ size: 1234, type: 'image/png' }];
+
+      const result = await downscaleImageToBase64(
+        new File(['webp'], 'drawing.webp', { type: 'image/webp' })
+      );
+
+      expect(result).toEqual({
+        base64: 'mock-1234',
+        mimeType: 'image/png',
+      });
+      expect(convertRequests).toEqual([{ type: 'image/webp', quality: 0.82 }]);
     });
   });
 });

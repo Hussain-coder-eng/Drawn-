@@ -131,17 +131,17 @@ export async function downscaleImageToBase64(
   // Load image and get dimensions
   const bitmap = await createImageBitmap(file);
 
-  let mimeType = preferredMimeType;
-  let blob = await renderImageBlob(bitmap, maxDim, mimeType, quality);
+  let blob = await renderImageBlob(bitmap, maxDim, preferredMimeType, quality);
+  let mimeType = blob.type || preferredMimeType;
 
   if (blob.size > MAX_INLINE_IMAGE_BYTES) {
-    mimeType = JPEG_MIME_TYPE;
     blob = await compressJpegWithinBudget(
       bitmap,
       maxDim,
       quality,
       preferredMimeType === JPEG_MIME_TYPE
     );
+    mimeType = blob.type || JPEG_MIME_TYPE;
   }
 
   if (blob.size > MAX_INLINE_IMAGE_BYTES) {
