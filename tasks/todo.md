@@ -13,7 +13,8 @@
 
 ## Review / Results
 
-- `npm run test -- --run`: passed, 12 files / 132 tests.
+- Fixed review finding: `downscaleImageToBase64` now enforces the inline byte budget for every final output, including JPEG uploads and JPEG fallback from PNG/WebP, using bounded JPEG recompression/downscale attempts.
+- `npm run test -- --run`: passed, 12 files / 133 tests.
 - `npm run lint`: passed.
-- `functions`: installed local dependencies with `npm ci`, then `timeout 120 ./node_modules/.bin/tsc --noEmit --pretty false` passed.
+- `npm --prefix functions run build -- --pretty false`: passed.
 - Note: `functions/npm ci` reported Node 24 vs package engine Node 22 and 20 audit vulnerabilities.

@@ -4,6 +4,13 @@ import type { NormalizedPoint } from './shapeMath';
 const MAX_IMAGE_DIM = 896;
 const JPEG_QUALITY = 0.82;
 const MAX_INLINE_IMAGE_BYTES = 675_000;
+const MIN_IMAGE_DIM = 1;
+const MIN_JPEG_QUALITY = 0.5;
+const MAX_JPEG_QUALITY = 1;
+const JPEG_QUALITY_RETRY_STEP = 0.12;
+const JPEG_QUALITY_ATTEMPTS_PER_DIMENSION = 2;
+const JPEG_MAX_DIMENSION_ATTEMPTS = 4;
+const JPEG_DIMENSION_RETRY_SCALE = 0.8;
 const PNG_MIME_TYPE = 'image/png';
 const JPEG_MIME_TYPE = 'image/jpeg';
 const WEBP_MIME_TYPE = 'image/webp';
@@ -35,6 +42,14 @@ function preferredOutputMimeType(fileType: string): string {
   return TRANSPARENT_OR_LINE_ART_MIME_TYPES.has(fileType) ? fileType : JPEG_MIME_TYPE;
 }
 
+function clampJpegQuality(quality: number): number {
+  return Math.max(MIN_JPEG_QUALITY, Math.min(MAX_JPEG_QUALITY, quality));
+}
+
+function jpegQualityCandidate(baseQuality: number, attempt: number): number {
+  return clampJpegQuality(baseQuality - JPEG_QUALITY_RETRY_STEP * attempt);
+}
+
 async function blobToBase64(blob: Blob): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -45,6 +60,61 @@ async function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+}
+
+async function renderImageBlob(
+  bitmap: ImageBitmap,
+  maxDim: number,
+  mimeType: string,
+  quality: number
+): Promise<Blob> {
+  const { width: scaledWidth, height: scaledHeight } = computeScaledDims(
+    bitmap.width,
+    bitmap.height,
+    maxDim
+  );
+
+  const canvas = new OffscreenCanvas(scaledWidth, scaledHeight);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('OffscreenCanvas 2d context unavailable');
+  }
+  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
+
+  return canvas.convertToBlob({ type: mimeType, quality });
+}
+
+async function compressJpegWithinBudget(
+  bitmap: ImageBitmap,
+  maxDim: number,
+  quality: number,
+  skipInitialQuality: boolean
+): Promise<Blob> {
+  let currentMaxDim = maxDim;
+
+  for (let dimAttempt = 0; dimAttempt < JPEG_MAX_DIMENSION_ATTEMPTS; dimAttempt++) {
+    const firstQualityAttempt = dimAttempt === 0 && skipInitialQuality ? 1 : 0;
+    for (
+      let qualityAttempt = firstQualityAttempt;
+      qualityAttempt < JPEG_QUALITY_ATTEMPTS_PER_DIMENSION;
+      qualityAttempt++
+    ) {
+      const candidateQuality = jpegQualityCandidate(quality, qualityAttempt);
+      const blob = await renderImageBlob(bitmap, currentMaxDim, JPEG_MIME_TYPE, candidateQuality);
+      if (blob.size <= MAX_INLINE_IMAGE_BYTES) {
+        return blob;
+      }
+    }
+
+    currentMaxDim = Math.max(
+      MIN_IMAGE_DIM,
+      Math.round(currentMaxDim * JPEG_DIMENSION_RETRY_SCALE)
+    );
+  }
+
+  throw new Error(
+    `Unable to fit image under ${MAX_INLINE_IMAGE_BYTES} bytes after bounded recompression`
+  );
 }
 
 /**
@@ -60,26 +130,22 @@ export async function downscaleImageToBase64(
 
   // Load image and get dimensions
   const bitmap = await createImageBitmap(file);
-  const { width: scaledWidth, height: scaledHeight } = computeScaledDims(
-    bitmap.width,
-    bitmap.height,
-    maxDim
-  );
-
-  // Draw onto offscreen canvas at scaled dimensions
-  const canvas = new OffscreenCanvas(scaledWidth, scaledHeight);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('OffscreenCanvas 2d context unavailable');
-  }
-  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
 
   let mimeType = preferredMimeType;
-  let blob = await canvas.convertToBlob({ type: mimeType, quality });
+  let blob = await renderImageBlob(bitmap, maxDim, mimeType, quality);
 
-  if (mimeType !== JPEG_MIME_TYPE && blob.size > MAX_INLINE_IMAGE_BYTES) {
+  if (blob.size > MAX_INLINE_IMAGE_BYTES) {
     mimeType = JPEG_MIME_TYPE;
-    blob = await canvas.convertToBlob({ type: mimeType, quality });
+    blob = await compressJpegWithinBudget(
+      bitmap,
+      maxDim,
+      quality,
+      preferredMimeType === JPEG_MIME_TYPE
+    );
+  }
+
+  if (blob.size > MAX_INLINE_IMAGE_BYTES) {
+    throw new Error(`Processed image exceeds ${MAX_INLINE_IMAGE_BYTES} byte inline budget`);
   }
 
   const base64 = await blobToBase64(blob);
