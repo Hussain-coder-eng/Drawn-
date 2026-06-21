@@ -1,8 +1,21 @@
 import { jsonrepair } from 'jsonrepair';
 import type { NormalizedPoint } from './shapeMath';
 
-const MAX_IMAGE_DIM = 768;
-const JPEG_QUALITY = 0.72;
+const MAX_IMAGE_DIM = 896;
+const JPEG_QUALITY = 0.82;
+const MAX_INLINE_IMAGE_BYTES = 675_000;
+const MIN_IMAGE_DIM = 1;
+const MIN_JPEG_QUALITY = 0.5;
+const MAX_JPEG_QUALITY = 1;
+const JPEG_QUALITY_RETRY_STEP = 0.12;
+const JPEG_QUALITY_ATTEMPTS_PER_DIMENSION = 2;
+const JPEG_MAX_DIMENSION_ATTEMPTS = 4;
+const JPEG_DIMENSION_RETRY_SCALE = 0.8;
+const PNG_MIME_TYPE = 'image/png';
+const JPEG_MIME_TYPE = 'image/jpeg';
+const WEBP_MIME_TYPE = 'image/webp';
+const TRANSPARENT_OR_LINE_ART_MIME_TYPES = new Set([PNG_MIME_TYPE, WEBP_MIME_TYPE]);
+const NEAR_DUPLICATE_POINT_DISTANCE = 0.002;
 
 /**
  * Compute scaled dimensions preserving aspect ratio.
@@ -25,36 +38,20 @@ export function computeScaledDims(
   };
 }
 
-/**
- * Downscale an image file to JPEG and return base64-encoded data.
- * Strips the "data:image/jpeg;base64," prefix.
- */
-export async function downscaleImageToBase64(
-  file: File,
-  maxDim: number = MAX_IMAGE_DIM,
-  quality: number = JPEG_QUALITY
-): Promise<{ base64: string; mimeType: string }> {
-  const mimeType = 'image/jpeg';
+function preferredOutputMimeType(fileType: string): string {
+  return TRANSPARENT_OR_LINE_ART_MIME_TYPES.has(fileType) ? fileType : JPEG_MIME_TYPE;
+}
 
-  // Load image and get dimensions
-  const bitmap = await createImageBitmap(file);
-  const { width: scaledWidth, height: scaledHeight } = computeScaledDims(
-    bitmap.width,
-    bitmap.height,
-    maxDim
-  );
+function clampJpegQuality(quality: number): number {
+  return Math.max(MIN_JPEG_QUALITY, Math.min(MAX_JPEG_QUALITY, quality));
+}
 
-  // Draw onto offscreen canvas at scaled dimensions
-  const canvas = new OffscreenCanvas(scaledWidth, scaledHeight);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('OffscreenCanvas 2d context unavailable');
-  }
-  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
+function jpegQualityCandidate(baseQuality: number, attempt: number): number {
+  return clampJpegQuality(baseQuality - JPEG_QUALITY_RETRY_STEP * attempt);
+}
 
-  // Export to JPEG and convert to base64 via FileReader (avoids RangeError on large images)
-  const blob = await canvas.convertToBlob({ type: mimeType, quality });
-  const base64 = await new Promise<string>((resolve, reject) => {
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
@@ -63,6 +60,95 @@ export async function downscaleImageToBase64(
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+}
+
+async function renderImageBlob(
+  bitmap: ImageBitmap,
+  maxDim: number,
+  mimeType: string,
+  quality: number
+): Promise<Blob> {
+  const { width: scaledWidth, height: scaledHeight } = computeScaledDims(
+    bitmap.width,
+    bitmap.height,
+    maxDim
+  );
+
+  const canvas = new OffscreenCanvas(scaledWidth, scaledHeight);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('OffscreenCanvas 2d context unavailable');
+  }
+  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight);
+
+  return canvas.convertToBlob({ type: mimeType, quality });
+}
+
+async function compressJpegWithinBudget(
+  bitmap: ImageBitmap,
+  maxDim: number,
+  quality: number,
+  skipInitialQuality: boolean
+): Promise<Blob> {
+  let currentMaxDim = maxDim;
+
+  for (let dimAttempt = 0; dimAttempt < JPEG_MAX_DIMENSION_ATTEMPTS; dimAttempt++) {
+    const firstQualityAttempt = dimAttempt === 0 && skipInitialQuality ? 1 : 0;
+    for (
+      let qualityAttempt = firstQualityAttempt;
+      qualityAttempt < JPEG_QUALITY_ATTEMPTS_PER_DIMENSION;
+      qualityAttempt++
+    ) {
+      const candidateQuality = jpegQualityCandidate(quality, qualityAttempt);
+      const blob = await renderImageBlob(bitmap, currentMaxDim, JPEG_MIME_TYPE, candidateQuality);
+      if (blob.size <= MAX_INLINE_IMAGE_BYTES) {
+        return blob;
+      }
+    }
+
+    currentMaxDim = Math.max(
+      MIN_IMAGE_DIM,
+      Math.round(currentMaxDim * JPEG_DIMENSION_RETRY_SCALE)
+    );
+  }
+
+  throw new Error(
+    `Unable to fit image under ${MAX_INLINE_IMAGE_BYTES} bytes after bounded recompression`
+  );
+}
+
+/**
+ * Downscale an image file and return base64-encoded data without the data URL prefix.
+ * Preserves PNG/WebP uploads when they stay within a conservative inline payload budget.
+ */
+export async function downscaleImageToBase64(
+  file: File,
+  maxDim: number = MAX_IMAGE_DIM,
+  quality: number = JPEG_QUALITY
+): Promise<{ base64: string; mimeType: string }> {
+  const preferredMimeType = preferredOutputMimeType(file.type);
+
+  // Load image and get dimensions
+  const bitmap = await createImageBitmap(file);
+
+  let blob = await renderImageBlob(bitmap, maxDim, preferredMimeType, quality);
+  let mimeType = blob.type || preferredMimeType;
+
+  if (blob.size > MAX_INLINE_IMAGE_BYTES) {
+    blob = await compressJpegWithinBudget(
+      bitmap,
+      maxDim,
+      quality,
+      preferredMimeType === JPEG_MIME_TYPE
+    );
+    mimeType = blob.type || JPEG_MIME_TYPE;
+  }
+
+  if (blob.size > MAX_INLINE_IMAGE_BYTES) {
+    throw new Error(`Processed image exceeds ${MAX_INLINE_IMAGE_BYTES} byte inline budget`);
+  }
+
+  const base64 = await blobToBase64(blob);
 
   return { base64, mimeType };
 }
@@ -156,19 +242,66 @@ export function orderAndFlattenStrokes(strokes: number[][][]): NormalizedPoint[]
   return result;
 }
 
+function extractJsonPayload(rawText: string): string {
+  const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const firstBrace = rawText.indexOf('{');
+  const lastBrace = rawText.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return rawText.slice(firstBrace, lastBrace + 1);
+  }
+
+  return rawText;
+}
+
+function toFiniteClampedPoint(point: unknown): number[] | null {
+  let rawX: unknown;
+  let rawY: unknown;
+
+  if (Array.isArray(point) && point.length >= 2) {
+    [rawX, rawY] = point;
+  } else if (point && typeof point === 'object') {
+    const candidate = point as { x?: unknown; y?: unknown };
+    rawX = candidate.x;
+    rawY = candidate.y;
+  }
+
+  if (typeof rawX !== 'number' || typeof rawY !== 'number') {
+    return null;
+  }
+  if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+    return null;
+  }
+
+  return [
+    Math.max(0, Math.min(1, rawX)),
+    Math.max(0, Math.min(1, rawY)),
+  ];
+}
+
+function isNearDuplicatePoint(a: number[], b: number[]): boolean {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]) <= NEAR_DUPLICATE_POINT_DISTANCE;
+}
+
 /**
  * Parse Gemini vision response JSON and return flattened, clamped strokes.
  * - Repairs malformed JSON using jsonrepair.
+ * - Accepts markdown fences or short prose around the JSON object.
+ * - Accepts [x,y] arrays and {x,y} objects.
  * - Clamps x,y to [0,1].
+ * - Drops near-duplicate consecutive points.
  * - Drops degenerate strokes (<2 points).
  * - Orders and flattens remaining strokes.
  * - Throws Error if no usable strokes remain.
  */
 export function parseVisionStrokes(rawText: string): NormalizedPoint[] {
   // Repair and parse JSON
-  let parsed: { strokes?: number[][][] };
+  let parsed: { strokes?: unknown };
   try {
-    const repaired = jsonrepair(rawText);
+    const repaired = jsonrepair(extractJsonPayload(rawText));
     parsed = JSON.parse(repaired);
   } catch (err) {
     throw new Error(`Failed to parse vision response: ${err instanceof Error ? err.message : String(err)}`);
@@ -187,11 +320,12 @@ export function parseVisionStrokes(rawText: string): NormalizedPoint[] {
 
     const clampedStroke: number[][] = [];
     for (const point of stroke) {
-      if (Array.isArray(point) && point.length >= 2 &&
-          Number.isFinite(point[0]) && Number.isFinite(point[1])) {
-        const x = Math.max(0, Math.min(1, point[0]));
-        const y = Math.max(0, Math.min(1, point[1]));
-        clampedStroke.push([x, y]);
+      const clampedPoint = toFiniteClampedPoint(point);
+      if (clampedPoint) {
+        const previousPoint = clampedStroke[clampedStroke.length - 1];
+        if (!previousPoint || !isNearDuplicatePoint(previousPoint, clampedPoint)) {
+          clampedStroke.push(clampedPoint);
+        }
       }
     }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   computeScaledDims,
   downscaleImageToBase64,
@@ -6,6 +6,29 @@ import {
   parseVisionStrokes,
 } from '../../src/lib/imageProcessing';
 import type { NormalizedPoint } from '../../src/lib/shapeMath';
+
+const TEST_IMAGE_BUDGET_BYTES = 675_000;
+const MOCK_IMAGE_WIDTH = 2_000;
+const MOCK_IMAGE_HEIGHT = 1_000;
+
+type BlobRequest = { type?: string; quality?: number };
+type BlobResponse = number | { size: number; type: string };
+
+class MockFileReader {
+  result: string | ArrayBuffer | null = null;
+  error: Error | null = null;
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  readAsDataURL(blob: Blob): void {
+    this.result = `data:${blob.type};base64,mock-${blob.size}`;
+    this.onload?.();
+  }
+}
+
+function createSizedBlob(size: number, type: string): Blob {
+  return new Blob([new Uint8Array(size)], { type });
+}
 
 describe('imageProcessing', () => {
   describe('computeScaledDims', () => {
@@ -154,6 +177,43 @@ describe('imageProcessing', () => {
       expect(result[0]).toEqual({ x: 0.1, y: 0.2 });
     });
 
+    it('parses markdown-fenced JSON responses', () => {
+      const input = '```json\n{"strokes": [[[0.1, 0.2], [0.3, 0.4]]]}\n```';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.1, y: 0.2 },
+        { x: 0.3, y: 0.4 },
+      ]);
+    });
+
+    it('parses short prose around a JSON object', () => {
+      const input = 'Here is the trace:\n{"strokes": [[[0.2, 0.3], [0.4, 0.5]]]}\nHope this helps.';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.2, y: 0.3 },
+        { x: 0.4, y: 0.5 },
+      ]);
+    });
+
+    it('accepts object points with x and y coordinates', () => {
+      const input = '{"strokes": [[{"x": 0.15, "y": 0.25}, {"x": 0.35, "y": 0.45}]]}';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.15, y: 0.25 },
+        { x: 0.35, y: 0.45 },
+      ]);
+    });
+
+    it('drops near-duplicate consecutive points after clamping', () => {
+      const input = '{"strokes": [[[0.1, 0.1], [0.101, 0.101], [0.2, 0.2], [0.2, 0.2], [0.4, 0.4]]]}';
+      const result = parseVisionStrokes(input);
+      expect(result).toEqual([
+        { x: 0.1, y: 0.1 },
+        { x: 0.2, y: 0.2 },
+        { x: 0.4, y: 0.4 },
+      ]);
+    });
+
     it('throws error when no usable strokes remain', () => {
       const input = '{"strokes": []}';
       expect(() => parseVisionStrokes(input)).toThrow(/no usable strokes/i);
@@ -206,11 +266,119 @@ describe('imageProcessing', () => {
   });
 
   describe('downscaleImageToBase64', () => {
-    it('uses computeScaledDims internally to scale image', () => {
-      // This function relies on computeScaledDims which is fully tested above.
-      // Canvas operations are too brittle to test in jsdom.
-      // Integration test of downscaleImageToBase64 should be done in browser or e2e tests.
-      expect(true).toBe(true); // Placeholder: the function exists and has proper signature
+    let convertResponses: BlobResponse[];
+    let convertRequests: BlobRequest[];
+    let canvasSizes: Array<{ width: number; height: number }>;
+
+    beforeEach(() => {
+      convertResponses = [];
+      convertRequests = [];
+      canvasSizes = [];
+
+      vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({
+        width: MOCK_IMAGE_WIDTH,
+        height: MOCK_IMAGE_HEIGHT,
+      }));
+
+      class MockOffscreenCanvas {
+        width: number;
+        height: number;
+
+        constructor(width: number, height: number) {
+          this.width = width;
+          this.height = height;
+          canvasSizes.push({ width, height });
+        }
+
+        getContext(): { drawImage: () => void } {
+          return { drawImage: vi.fn() };
+        }
+
+        async convertToBlob(request: BlobRequest): Promise<Blob> {
+          convertRequests.push(request);
+          const response = convertResponses.shift();
+          if (response === undefined) {
+            throw new Error('Unexpected convertToBlob call');
+          }
+          if (typeof response === 'number') {
+            return createSizedBlob(response, request.type ?? 'image/png');
+          }
+          return createSizedBlob(response.size, response.type);
+        }
+      }
+
+      vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas);
+      vi.stubGlobal('FileReader', MockFileReader);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('recompresses and downscales JPEG output until it fits the inline byte budget', async () => {
+      convertResponses = [
+        TEST_IMAGE_BUDGET_BYTES + 100_000,
+        TEST_IMAGE_BUDGET_BYTES + 50_000,
+        TEST_IMAGE_BUDGET_BYTES - 1,
+      ];
+
+      const result = await downscaleImageToBase64(
+        new File(['jpeg'], 'photo.jpg', { type: 'image/jpeg' })
+      );
+
+      expect(result).toEqual({
+        base64: `mock-${TEST_IMAGE_BUDGET_BYTES - 1}`,
+        mimeType: 'image/jpeg',
+      });
+      expect(convertRequests).toEqual([
+        { type: 'image/jpeg', quality: 0.82 },
+        { type: 'image/jpeg', quality: expect.any(Number) },
+        { type: 'image/jpeg', quality: 0.82 },
+      ]);
+      expect(convertRequests[1].quality).toBeLessThan(0.82);
+      expect(canvasSizes).toEqual([
+        { width: 896, height: 448 },
+        { width: 896, height: 448 },
+        { width: 717, height: 359 },
+      ]);
+    });
+
+    it('falls back from oversized PNG to JPEG and enforces the final byte budget', async () => {
+      convertResponses = [
+        TEST_IMAGE_BUDGET_BYTES + 250_000,
+        TEST_IMAGE_BUDGET_BYTES + 75_000,
+        TEST_IMAGE_BUDGET_BYTES - 10,
+      ];
+
+      const result = await downscaleImageToBase64(
+        new File(['png'], 'drawing.png', { type: 'image/png' })
+      );
+
+      expect(result).toEqual({
+        base64: `mock-${TEST_IMAGE_BUDGET_BYTES - 10}`,
+        mimeType: 'image/jpeg',
+      });
+      expect(convertRequests.map(({ type }) => type)).toEqual([
+        'image/png',
+        'image/jpeg',
+        'image/jpeg',
+      ]);
+      expect(canvasSizes[0]).toEqual({ width: 896, height: 448 });
+      expect(canvasSizes.at(-1)).toEqual({ width: 896, height: 448 });
+    });
+
+    it('returns the actual blob MIME type when WebP encoding falls back to PNG', async () => {
+      convertResponses = [{ size: 1234, type: 'image/png' }];
+
+      const result = await downscaleImageToBase64(
+        new File(['webp'], 'drawing.webp', { type: 'image/webp' })
+      );
+
+      expect(result).toEqual({
+        base64: 'mock-1234',
+        mimeType: 'image/png',
+      });
+      expect(convertRequests).toEqual([{ type: 'image/webp', quality: 0.82 }]);
     });
   });
 });

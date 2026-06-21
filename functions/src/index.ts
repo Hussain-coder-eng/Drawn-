@@ -41,7 +41,15 @@ Return ONLY JSON:
   ]
 }`;
 
-const VISION_SYSTEM_PROMPT = `Trace the MAIN subject of the image as 1–4 ORDERED strokes. Start with the outer silhouette, then add key internal features (e.g. eyes, mouth) as separate strokes. Each stroke must have 12–40 points. Coordinates are normalized to [0,1] with y pointing DOWN (0=top, 1=bottom). Return ONLY JSON with no prose and no markdown fences:
+const VISION_SYSTEM_PROMPT = `Trace the MAIN subject of the image as 1–6 ORDERED strokes for GPS route drawing.
+RULES:
+- Start with the outer silhouette as stroke 1.
+- Add only key recognizable internal strokes when they materially help identify the subject.
+- Preserve distinctive corners, apexes, curves, holes, and symmetry changes.
+- Ignore background, shadows, texture, color fills, labels, and decorative noise.
+- Use 16–72 points per silhouette stroke and 8–40 points for internal strokes.
+- Coordinates are normalized to [0,1] with y pointing DOWN (0=top, 1=bottom).
+- Return JSON only, with no prose and no markdown fences:
 { "strokes": [[[x,y],[x,y],...], ...] }`;
 
 interface ImagePart {

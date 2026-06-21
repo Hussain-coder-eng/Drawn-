@@ -8,6 +8,8 @@ import {
   rotateShape,
   scaleShape,
   projectShapeToLatLng,
+  adaptiveSimplify,
+  SHAPE_SIMPLIFICATION_CONFIG,
   NormalizedPoint,
   computeBboxDiagonal,
   isClosedShape,
@@ -128,6 +130,31 @@ describe('computeBboxDiagonal', () => {
   });
 });
 
+describe('image simplification config', () => {
+  it('preserves more detail than draw mode', () => {
+    expect(SHAPE_SIMPLIFICATION_CONFIG.image.epsilon).toBeLessThan(SHAPE_SIMPLIFICATION_CONFIG.draw.epsilon);
+    expect(SHAPE_SIMPLIFICATION_CONFIG.image.targetSegments).toBeGreaterThan(SHAPE_SIMPLIFICATION_CONFIG.draw.targetSegments);
+    expect(SHAPE_SIMPLIFICATION_CONFIG.image.minSegments).toBeGreaterThan(SHAPE_SIMPLIFICATION_CONFIG.draw.minSegments);
+  });
+
+  it('keeps image simplification above draw detail on a high-detail path', () => {
+    const detailedPath: NormalizedPoint[] = Array.from({ length: 80 }, (_, index) => {
+      const t = (index / 79) * Math.PI * 2;
+      const radius = 0.35 + Math.sin(t * 8) * 0.08;
+      return {
+        x: 0.5 + Math.cos(t) * radius,
+        y: 0.5 + Math.sin(t) * radius,
+      };
+    });
+
+    const drawSimplified = adaptiveSimplify(detailedPath, SHAPE_SIMPLIFICATION_CONFIG.draw);
+    const imageSimplified = adaptiveSimplify(detailedPath, SHAPE_SIMPLIFICATION_CONFIG.image);
+
+    expect(imageSimplified.segmentCount).toBeGreaterThan(drawSimplified.segmentCount);
+    expect(imageSimplified.segmentCount).toBeGreaterThanOrEqual(SHAPE_SIMPLIFICATION_CONFIG.image.minSegments);
+  });
+});
+
 describe('isClosedShape', () => {
   it('returns true for closed preset shapes', () => {
     expect(isClosedShape('shapes', 'circle', [])).toBe(true);
@@ -157,6 +184,13 @@ describe('isClosedShape', () => {
     expect(isClosedShape('draw', null, path)).toBe(true);
   });
 
+  it('returns true for image mode when first and last points are within 10% bbox diagonal', () => {
+    const path: NormalizedPoint[] = [
+      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }, { x: 0.05, y: 0.05 }
+    ];
+    expect(isClosedShape('image', null, path)).toBe(true);
+  });
+
   it('returns false for draw mode when first and last are far apart', () => {
     // Open diagonal line: gap = √2 ≈ 1.414, which equals bbox diagonal → not < 10%
     const path: NormalizedPoint[] = [
@@ -165,8 +199,20 @@ describe('isClosedShape', () => {
     expect(isClosedShape('draw', null, path)).toBe(false);
   });
 
+  it('returns false for image mode when first and last are far apart', () => {
+    const path: NormalizedPoint[] = [
+      { x: 0, y: 0 }, { x: 0.5, y: 0.5 }, { x: 1, y: 1 }
+    ];
+    expect(isClosedShape('image', null, path)).toBe(false);
+  });
+
   it('returns false for draw mode with fewer than 2 points', () => {
     expect(isClosedShape('draw', null, [])).toBe(false);
     expect(isClosedShape('draw', null, [{ x: 0, y: 0 }])).toBe(false);
+  });
+
+  it('returns false for image mode with fewer than 2 points', () => {
+    expect(isClosedShape('image', null, [])).toBe(false);
+    expect(isClosedShape('image', null, [{ x: 0, y: 0 }])).toBe(false);
   });
 });
