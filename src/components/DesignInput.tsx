@@ -8,6 +8,7 @@ import { Point, NormalizedPoint } from "@/src/lib/shapeMath";
 import React, { useState, useRef, useEffect } from "react";
 import { DrawingCanvas } from "./DrawingCanvas";
 import { imageToOutline } from "@/src/services/visionService";
+import { isE2EEnabled } from "@/src/lib/e2e";
 
 interface DesignInputProps {
   mode: InputMode;
@@ -22,6 +23,18 @@ interface DesignInputProps {
   onModeSelect: (mode: InputMode) => void;
   returnToStart: boolean;
   onReturnToStartChange: (v: boolean) => void;
+}
+
+declare global {
+  interface Window {
+    __DRAWN_TEST_HOOKS__?: {
+      imageTraceMode?: "success" | "failure";
+      imageToOutline?: (
+        file: File,
+        onProgress?: (message: string) => void
+      ) => Promise<NormalizedPoint[]>;
+    };
+  }
 }
 
 function ReturnToStartToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
@@ -105,11 +118,15 @@ export default function DesignInput({
     thumbnailUrlRef.current = newUrl;
     setImageThumbnail(newUrl);
     try {
-      const outline = await imageToOutline(file, (msg) => setImageProgress(msg));
+      const traceImage = isE2EEnabled
+        ? window.__DRAWN_TEST_HOOKS__?.imageToOutline ?? imageToOutline
+        : imageToOutline;
+      const outline = await traceImage(file, (msg) => setImageProgress(msg));
       handleShapeComplete(outline);
       setHasImageOutline(true);
-    } catch (err: any) {
-      setImageError(err.message || "Failed to trace image. Please try again.");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to trace image. Please try again.";
+      setImageError(message);
       setNormalizedDrawnPath([]);
       setDrawnPath([]);
       URL.revokeObjectURL(thumbnailUrlRef.current);
@@ -227,6 +244,7 @@ export default function DesignInput({
             <div className="space-y-3">
               <button
                 type="button"
+                data-testid="image-upload-button"
                 aria-label={imageThumbnail ? "Replace uploaded image" : "Upload image"}
                 onClick={() => imageInputRef.current?.click()}
                 disabled={isImageLoading}
@@ -238,7 +256,12 @@ export default function DesignInput({
                 )}
               >
                 {imageThumbnail ? (
-                  <img src={imageThumbnail} alt="Uploaded" className="h-full w-full object-contain rounded-[10px] p-1" />
+                  <img
+                    data-testid="image-preview"
+                    src={imageThumbnail}
+                    alt="Uploaded"
+                    className="h-full w-full object-contain rounded-[10px] p-1"
+                  />
                 ) : (
                   <>
                     <ImageIcon className="w-7 h-7 text-text-muted" />
@@ -251,6 +274,7 @@ export default function DesignInput({
               <input
                 ref={imageInputRef}
                 type="file"
+                data-testid="image-file-input"
                 accept="image/*"
                 className="hidden"
                 onChange={(e) => {
@@ -260,24 +284,31 @@ export default function DesignInput({
                 }}
               />
               {isImageLoading && imageProgress && (
-                <div className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-full w-fit mx-auto">
+                <div data-testid="image-progress" className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-full w-fit mx-auto">
                   <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">{imageProgress}</span>
                 </div>
               )}
               {hasImageOutline && !isImageLoading && (
-                <div className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto">
+                <div
+                  data-testid="image-outline-success"
+                  data-outline-point-count={drawnPath.length}
+                  className="flex items-center justify-center gap-2 bg-success/20 border border-success/30 px-3 py-1.5 rounded-full w-fit mx-auto"
+                >
                   <Check className="w-3 h-3 text-success" />
                   <span className="text-[10px] font-bold text-success uppercase tracking-wider">Outline Captured</span>
                 </div>
               )}
               {imageError && (
-                <div className="p-3 bg-danger/10 border border-danger/20 rounded-xl text-danger text-[11px] font-medium text-center">
+                <div data-testid="image-error" className="p-3 bg-danger/10 border border-danger/20 rounded-xl text-danger text-[11px] font-medium text-center">
                   {imageError}
                   <button
                     type="button"
+                    data-testid="image-error-clear"
                     onClick={() => {
                       setImageError(null);
                       setHasImageOutline(false);
+                      setNormalizedDrawnPath([]);
+                      setDrawnPath([]);
                       if (thumbnailUrlRef.current) {
                         URL.revokeObjectURL(thumbnailUrlRef.current);
                         thumbnailUrlRef.current = null;
