@@ -21,8 +21,12 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev',
+    env: {
+      ...process.env,
+      VITE_E2E: 'true',
+    },
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 30_000,
   },
 });

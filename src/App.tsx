@@ -76,6 +76,7 @@ import { NudgeMap } from "./components/NudgeMap";
 import { RunScreen } from "./components/RunScreen";
 import { PreRunChecklist } from "./components/PreRunChecklist";
 import { NavRoute, preprocessRouteForNavigation } from "./lib/navigationService";
+import { isE2EEnabled } from "./lib/e2e";
 
 // Global limiters
 const osrmLimiter = new RateLimiter({ maxRequests: 10, windowMs: 60000 });
@@ -90,6 +91,12 @@ interface SavedRoute extends DrawnState {
   timestamp: number;
   label: string;
   uid: string;
+}
+
+declare global {
+  interface Window {
+    __DRAWN_TEST_USER__?: Pick<User, "uid" | "displayName" | "email" | "photoURL">;
+  }
 }
 
 export default function App() {
@@ -201,6 +208,12 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
+    if (isE2EEnabled && window.__DRAWN_TEST_USER__) {
+      setUser(window.__DRAWN_TEST_USER__ as User);
+      setIsAuthReady(true);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setIsAuthReady(true);
